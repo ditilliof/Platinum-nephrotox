@@ -1,0 +1,16 @@
+
+Model fitted: Weibull (type 2) (4 parms)
+
+Parameter estimates:
+
+                Estimate Std. Error  t-value   p-value    
+b:(Intercept)  7.1765851  0.6676534  10.7490 0.0001208 ***
+c:(Intercept) -0.0090986  0.0033085  -2.7501 0.0403073 *  
+d:(Intercept)  0.3634343  0.0082948  43.8147 1.169e-07 ***
+e:(Intercept) 39.0580332  0.3868162 100.9731 1.806e-09 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error:
+
+ 0.007850893 (5 degrees of freedom)

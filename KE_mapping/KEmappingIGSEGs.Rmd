@@ -1,0 +1,434 @@
+---
+title: "KE_mapping_IGS"
+author: "Filippo Di Tillio"
+date: "2024-09-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, readr, deSolve, conflicted,scales, readxl)
+
+conflict_prefer("filter","dplyr")
+conflict_prefer("sd","stats")
+
+source('./IGSfunctions.R')
+vivodir = "../data/in vivo"
+vitrodir = "../data/in vitro"
+PlotOXdir = "../Plots&output/Oxstress"
+if (!dir.exists(PlotOXdir)) {
+  dir.create(PlotOXdir)
+}
+```
+
+#Import in vivo and in vitro data and Pearson correlation matrix
+```{r}
+cpmNormalized_l2fc_meanCont <- read.delim(paste0(vivodir,"/DEGsfiltered_vs_correctControl_clean_combinedControl_splitReplicate.txt")) %>%
+  mutate(REPLICATE = case_when(
+    grepl("rep1", meanID) ~ 1,
+    grepl("rep2", meanID) ~ 2,
+    grepl("rep3", meanID) ~ 3
+  ))
+
+cpmNormalized_l2fc_meanCont_ppt = cpmNormalized_l2fc_meanCont %>% filter(LOCATION_ID == 'PPT')
+
+log2repsub <- read_csv(paste0(vitrodir,"/EUT046_expression_long.csv")) %>% drop_na() %>% dplyr::rename("l2fc" = 'log2fc')
+```
+
+#Import input matrix for in vivo data
+```{r}
+
+file.exists(paste0(vivodir,"/expression_wide_rat.rds"))
+input_matrix_original = readRDS(paste0(vivodir,"/expression_wide_rat.rds"))
+
+input_matrix = input_matrix_original %>% 
+  filter(str_count(gene_symbol, "_") < 2) %>%
+  separate(col = "gene_symbol", into = c("id","gene_symbol"), sep = "_", remove = TRUE)  %>%
+  dplyr::select(-id) 
+
+gs_eid = input_matrix[,1:2] %>%
+  separate(entrez_id, into = c("drop", "entrez_id"), sep = "_") %>%
+  mutate(entrez_id = as.numeric(entrez_id)) %>%
+  select(-drop)
+```
+
+```{r}
+input_matrix = input_matrix %>%
+  select(-entrez_id) %>%
+  pivot_longer(cols = !c(gene_symbol)) %>% #changed
+  pivot_wider(names_from = c(gene_symbol)  , values_from = value) %>%
+  column_to_rownames(var ="name")
+
+input_matrix = data.frame(apply(input_matrix, 2, function(x) (x - mean(x)) / sd(x) ))
+
+Pear_vivo = abs(cor(input_matrix, method = "pearson"))
+
+#Import input matrix for in vitro data
+input_matrix_original = readRDS(file = paste0(vivodir,"/expression_wide_vitro.RDS"))
+
+input_matrix = input_matrix_original %>%
+  separate(col = "gene_symbol_entrez_id", into = c("gene_symbol","entrez_id"), sep = "_", remove = FALSE) %>%
+  mutate(entrez_id = paste0("id_",gene_symbol)) %>%
+  dplyr::select(-basemean, -gene_symbol_entrez_id, -entrez_id) %>%
+  pivot_longer(cols = !c(gene_symbol)) %>% #changed
+  pivot_wider(names_from = gene_symbol  , values_from = value) %>%
+  column_to_rownames(var ="name")
+
+input_matrix = data.frame(apply(input_matrix, 2, function(x) (x - mean(x)) / sd(x) ))
+
+#Generate pearson correlation matrix (alternative to adjacency)
+
+Pear_vitro = abs(cor(input_matrix, method = "pearson"))
+```
+
+#The "Gene_symbol" column in "log2repsub" needs to be uptated, some of the gene symbols there are outdated.
+```{r}
+Temposeq_manifest_1_2_realignment <- read.delim(paste0(vitrodir,"/Temposeq_manifest_1.2_realignment.txt"))
+
+Orthology <- read.delim(paste0(vivodir,"/RGD_ORTHOLOGS_NCBI.txt"))[c(1,4)]
+
+
+filtered_symbols = Temposeq_manifest_1_2_realignment %>% dplyr::filter(Gene_Symbol %in% log2repsub$gene_symbol) %>% drop_na() %>%
+  select(Gene_Symbol, gene_symbol, entrez_id) %>% unique() 
+
+```
+
+#Obtain corEG distribution for the modules of interest, using the in vivo rat modules 
+```{r}
+stats_rat = readRDS(paste0(vivodir,"/stats_rat.rds"))
+corEG_table_1 = stats_rat %>%
+  separate(entrez_id, into = c("drop", "entrez_id"), sep = "_") %>% select(entrez_id, corr_egs, module) %>%
+  mutate(entrez_id = as.numeric(entrez_id))
+
+corEG_table = merge(corEG_table_1, gs_eid %>% dplyr::filter(entrez_id %in% corEG_table_1$entrez_id), by = "entrez_id") %>% unique() 
+
+
+corEG_modulerat160 = corEG_table %>% dplyr::filter(module == "rKIDNEY_160") %>% arrange(corr_egs)
+
+corEG_modulerat7m = corEG_table %>% dplyr::filter(module == "rKIDNEY_7m") %>% arrange(corr_egs)
+
+# Define the threshold
+threshold <- 0.5
+
+hist_tot = hist(abs(corEG_table$corr_egs), breaks = 500, plot = FALSE)
+# Plot the first histogram with the same colors
+hist_dd = hist(abs(corEG_modulerat160$corr_egs), breaks = 30, plot = FALSE)
+hist_inf = hist(abs(corEG_modulerat7m$corr_egs), breaks = 30, plot = FALSE)
+
+# Create a vector of colors based on the values
+colors_dd <- ifelse(hist_dd$mids < threshold, "red", "green")
+colors_inf <- ifelse(hist_inf$mids < threshold, "red", "green")
+
+# Create a vector of probabilities for each bin
+probabilities_tot = hist_tot$counts / sum(hist_tot$counts)
+probabilities_dd <- hist_dd$counts / sum(hist_dd$counts)
+probabilities_inf <- hist_inf$counts / sum(hist_inf$counts)
+
+# Plot the histogram with colored bars
+barplot(probabilities_tot, names.arg = hist_tot$mids, main = "corEG distribution for all genes", font.lab=2)
+
+barplot(probabilities_dd, names.arg = hist_dd$mids, col = colors_dd, main = "corEG distribution, module rKIDNEY_160")
+barplot(probabilities_inf, names.arg = hist_inf$mids, col = colors_inf, main = "corEG distribution, module rKIDNEY_7m")
+```
+
+#define gene sets for each KE
+```{r}
+dd_genes_vivo <- unlist(corEG_modulerat160 %>% filter(corr_egs>threshold) %>% select(gene_symbol))
+
+inf_genes_vivo <- unlist(corEG_modulerat7m %>% filter(corr_egs>threshold) %>% select(gene_symbol))
+
+#We need to map the rat gene names into human for the in vitro calculations
+dd_genes_vitro <- unlist(Orthology %>% dplyr::filter(RAT_GENE_SYMBOL %in% dd_genes_vivo) %>% unique() %>% rbind(c(dd_genes_vivo[which(!(dd_genes_vivo %in% Orthology$RAT_GENE_SYMBOL))],toupper(dd_genes_vivo[which(!(dd_genes_vivo %in% Orthology$RAT_GENE_SYMBOL))]))) %>% select(2))
+```
+
+
+#IGS
+```{r}
+Pear_vitro = as.data.frame(Pear_vitro)
+dd_genes_vitro = dd_genes_vitro[dd_genes_vitro %in% colnames(Pear_vitro)]
+Pear_dd_vitro = Pear_vitro[dd_genes_vitro,dd_genes_vitro]
+dd_scores_vitro <- compute_score_vitro(log2repsub,Pear_dd_vitro,dd_genes_vitro,"DD")
+
+Pear_vivo = as.data.frame(Pear_vivo)
+
+Pear_dd_vivo = Pear[dd_genes_vivo,dd_genes_vivo]
+inf_genes_vivo = inf_genes[inf_genes_vivo%in%colnames(Pear_vivo)]
+Pear_inf_vivo = Pear[inf_genes_vivo, inf_genes_vivo] 
+
+dd_ppt_scores_vivo <- compute_score(cpmNormalized_l2fc_meanCont_ppt,Pear_dd_vivo,dd_genes_vivo,"DD")
+inf_ppt_scores_vivo <- compute_score(cpmNormalized_l2fc_meanCont_ppt,Pear_inf_vivo,inf_genes_vivo,"INF")
+
+
+
+```
+
+#Load histopathology data and create full in vivo qAOP dataframe
+```{r}
+path <- paste0(vivodir, "/TransQST_WP6_Cisplatin_Time_Course_Histopathology.xlsx")
+
+# Raw data 
+TransQST_WP6_Cisplatin_Time_Course_Histopathology_Fibrosis <- read_excel(
+  path, sheet = "RawData_and_Plot", range = "B18:L22", col_names = FALSE
+) %>%
+  mutate(across(-1, ~ ifelse(is.na(.), 0, as.numeric(.))))
+
+TransQST_WP6_Cisplatin_Time_Course_Histopathology_Necrosis <- read_excel(
+  path, sheet = "RawData_and_Plot", range = "B3:L7", col_names = FALSE
+) %>%
+  mutate(across(-1, ~ ifelse(is.na(.), 0, as.numeric(.))))
+
+cols_hist <- read_excel(
+  path, sheet = "RawData_and_Plot", range = "B2:L2", col_names = FALSE
+)
+
+KF <- process_histopathology(
+  TransQST_WP6_Cisplatin_Time_Course_Histopathology_Fibrosis,
+  header_row = cols_hist,
+  statevar   = "KF"
+)
+
+CD_hist <- process_histopathology(
+  TransQST_WP6_Cisplatin_Time_Course_Histopathology_Necrosis,
+  header_row = cols_hist,   
+  statevar   = "CD"
+)
+
+KF_stan = KF %>% select(-CONCENTRATION) %>%
+  mutate(TIMEPOINT = (TIMEPOINT * 24)-24) 
+
+CD_stan = CD_hist %>% select(-CONCENTRATION) %>%
+  mutate(TIMEPOINT = (TIMEPOINT * 24)-24)
+```
+
+```{r}
+dd_ppt_stan = dd_ppt_scores_vivo %>% group_by(TIMEPOINT, StateVar)%>%
+  summarise(means = mean(Score), sds = sd(Score))
+  
+inf_ppt_stan = inf_ppt_scores_vivo %>% group_by(TIMEPOINT, StateVar)%>%
+  summarise(means = mean(Score), sds = sd(Score))
+
+CISQAOP_FDT_vivo_ppt_2024 <- bind_rows(dd_ppt_stan, CD_stan, inf_ppt_stan, KF_stan) %>% filter(TIMEPOINT != 0)
+write.csv(CISQAOP_FDT_vivo_ppt_2024, paste0(vivodir,"/", "CISQAOP_FDT_2024_invivodata",".csv"))
+
+```
+
+#Load Necrosis data and create in vitro qAOP dataframe (DNA Damage and Necrosis separate)
+```{r}
+Necro <-read.delim(paste0(vitrodir,'/tmp_cis_CD_rep4.txt'), sep = ",") %>% select(-1)
+
+Necro_adj <- Necro  %>%
+  separate(col = locationID, into = c("Well", "position"), sep = "_", remove = FALSE) %>%
+  pivot_wider(names_from = variable, values_from = value) %>%
+  mutate(PI_norm = count_PI_masked_primaryID_AreaShape_Area.DIV.Nuclei_AreaShape_Area_larger_0_, AnV_norm = count_AnV_masked_primaryID_AreaShape_Area.DIV.Nuclei_AreaShape_Area_larger_0_) %>%
+  select(-c(count_PI_masked_primaryID_AreaShape_Area.DIV.Nuclei_AreaShape_Area_larger_0_,count_AnV_masked_primaryID_AreaShape_Area.DIV.Nuclei_AreaShape_Area_larger_0_)) %>%
+  group_by(treatment,dose_uM,replID,timeAfterExposure,Well) %>%
+  summarize(PI_norm = mean(PI_norm), AnV_norm = mean(AnV_norm)) %>%
+  group_by(treatment,dose_uM,replID,timeAfterExposure) %>%
+  summarize(PI_norm = mean(PI_norm), AnV_norm = mean(AnV_norm)) %>%
+  group_by(replID,timeAfterExposure) %>% #,variable
+  mutate(DMSO_PI = ifelse(treatment == "CycA",PI_norm[treatment == "DMEM"],PI_norm[treatment == "DMSO"]),
+         DMSO_AnV = ifelse(treatment == "CycA",AnV_norm[treatment == "DMEM"],AnV_norm[treatment == "DMSO"]),
+         PI_norm = PI_norm - DMSO_PI,
+         AnV_norm = AnV_norm - DMSO_AnV) %>% filter(treatment == 'Cis') %>% group_by(dose_uM,timeAfterExposure) %>%
+  summarise(mean_PI = mean(PI_norm),sd_PI=sd(PI_norm),mean_AnV = mean(AnV_norm),sd_AnV=sd(AnV_norm)) %>% ungroup()
+
+Necro_AOP = Necro_adj  %>% mutate(TIME = timeAfterExposure, DOSE = dose_uM, StateVar = "NEC", mean = mean_PI, sd = sd_PI) %>%
+  select(-c(1:6))
+
+write.csv(x = Necro_AOP, file = paste0(vitrodir, "NecroAOPnocc_fulltime.csv"))
+write.csv(dd_scores, paste0(vitrodir,'/','IGS_invitroqAOP_20240822.csv'))
+```
+
+
+#Generate qAOP data using EGs
+```{r}
+#in vivo KE mapping based on EGs
+EGscore_ppt_perreplicate2 <- read_delim(paste0(vivodir,"/EGscore_ppt_perreplicate2.txt")) %>% 
+  mutate(eg_score = as.numeric(eg_score), Replicate = case_when(
+    grepl("1_1", experiment) ~ 1,
+    grepl("1_2", experiment) ~ 2,
+    grepl("1_3", experiment) ~ 3
+  ))
+EG_160 = EGscore_ppt_perreplicate2 %>% filter(module ==  "rKIDNEY_160")
+EG_7m = EGscore_ppt_perreplicate2 %>% filter(module ==  "rKIDNEY_7m")
+
+EG_160_sum = EG_160 %>% group_by(time) %>%
+  summarise(means = mean(eg_score), sds = sd(eg_score)) %>% 
+  mutate(StateVar = "DD") %>%
+  rename(TIMEPOINT = time)
+EG_7m_sum = EG_7m %>% group_by(time) %>%
+  summarise(means = mean(eg_score), sds = sd(eg_score)) %>% 
+  mutate(StateVar = "INF") %>%
+  rename(TIMEPOINT = time)
+CISQAOP_FDT_vivo_ppt_2024_EGs <- bind_rows(EG_160_sum, CD_stan, EG_7m_sum, KF_stan) %>% filter(TIMEPOINT != 0)
+write.csv(CISQAOP_FDT_vivo_ppt_2024_EGs, paste0(vivodir,"/", "CISQAOP_FDT_2024_invivodata_EGs2",".csv"))
+
+#in vitro KE mapping based on EGs
+EGs_vitro = read_delim(paste0(vitrodir, "/moduleTableinvitro.txt"), delim = "\t") %>%
+  mutate(
+    REPLICATE = case_when(
+      grepl("R1", experiment) ~ 1,
+      grepl("R2", experiment) ~ 2,
+      grepl("R3", experiment) ~ 3
+    ),
+    DOSE = case_when(
+      grepl("01uM", experiment) ~ 0.1,
+      grepl("1uM", experiment) ~ 1,
+      grepl("10uM", experiment) ~ 10,
+      grepl("05uM", experiment) ~ 0.5,
+      grepl("25uM", experiment) ~ 2.5,
+      grepl("5uM", experiment) ~ 5,
+      grepl("20uM", experiment) ~ 20,
+      grepl("30uM", experiment) ~ 30,
+      grepl("50uM", experiment) ~ 50
+    )
+  )
+
+EGs_vitro_160 <- EGs_vitro %>% 
+  filter(module == "rKIDNEY_160") 
+EGs_vitro_160_summ = EGs_vitro_160 %>% group_by(DOSE,time) %>%
+  summarise(meaneg = mean(eg_score), sdeg = sd(eg_score))
+r160_stan = EGs_vitro_160_summ %>% mutate(StateVar = "DD") %>%
+  rename("mean" = "meaneg", "sd" = "sdeg", "TIME" = "time")
+
+write.table(r160_stan, paste0(vitrodir, "/invitro160", ".csv"), sep = ",")
+```
+#Show that oxidative stress modules are not feasible for modeling
+
+```{r}
+
+EGscore_ppt_perreplicate2 = EGscore_ppt_perreplicate2 %>%
+  rename(DOSE = conc_level)
+
+dose_labels <- c(
+  "0.1" = "0.1 µM",
+  "0.5" = "0.5 µM",
+  "1"   = "1 µM",
+  "2.5" = "2.5 µM",
+  "5"   = "5 µM",
+  "10"  = "10 µM",
+  "20"  = "20 µM",
+  "30"  = "30 µM",
+  "50"  = "50 µM"
+)
+
+#From enrichment tab of TXG-MAPr in vivo rat kidney app, we select modules rKIDNEY_105, rKIDNEY_96m (Mitochondrial Electron Transport Chain) to be enriched with Oxidative stress genes
+
+EGs_vitro_105_summ = filter_and_summ(EGs_vitro, 105)
+EGs_vitro_160_summ = filter_and_summ(EGs_vitro, 160)
+EGs_vitro_96m_summ = filter_and_summ(EGs_vitro, '96m')
+EGs_vitro_53_summ = filter_and_summ(EGs_vitro, 53)
+EGs_vitro_106_summ = filter_and_summ(EGs_vitro, 106)
+EGs_vivo_106_summ = filter_and_summ(EGscore_ppt_perreplicate2, 106)
+
+
+
+base_theme <- theme_classic() + 
+  theme(
+    axis.title = element_text(size = 15, margin = margin(5, 5, 5, 5)),  # Larger axis titles
+    #strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 15), # Larger legend title
+    legend.text = element_text(size = 14),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0),  # Increase margin around legend
+    #panel.spacing = unit(1.5, "lines"),  # Increase space between facets to prevent overlap
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels to prevent overlap
+  )
+
+plot_vitro(105)
+plot_vitro("96m")
+plot_vivo(106)
+plot_vitro(160)
+plot_vitro_single_dose(160, 20)
+
+```
+
+#Plot individual relevant Oxidative Stress genes to support module deactivation
+```{r}
+
+human_genes <- c("NFE2L2", "GCLC", "GCLM", "SOD1", "SOD2", "CAT", 
+                 "TXN", "NQO1", "FTH1", 'TXNRD1', 'SQSTM1', 'HMOX1')
+rat_genes <- c("Nfe2l2", "Gclc", "Gclm", "Sod1", "Sod2", "Cat", 
+                "Nqo1", "Fth1", "Txnrd1", "Sqstm1", "Hmox1")
+
+
+
+
+```
+
+```{r}
+# Filter the dataset for the genes of interest
+filtered_data <- log2repsub %>%
+  filter(gene_symbol %in% human_genes)
+
+# Calculate mean and standard deviation of l2fc across replicates
+summary_data <- filtered_data %>%
+  group_by(DOSE, TIME, gene_symbol) %>%
+  summarize(mean_l2fc = mean(l2fc), sd_l2fc = sd(l2fc), .groups = 'drop')
+
+plot_oxgenes_tiff(
+  data = summary_data,
+  xvar = "TIME",
+  yvar = "mean_l2fc",
+  ymin = "mean_l2fc - sd_l2fc",
+  ymax = "mean_l2fc + sd_l2fc",
+  colorvar = "gene_symbol",
+  title = "Time Course of l2fc for Selected Genes",
+  xlabel = "Time",
+  ylabel = "Mean l2fc ± SD",
+  filename = paste0(PlotOXdir, "/OSRHUMANGENES.tiff"),
+  width = 15,
+  height = 15,
+  facet_var = "DOSE"
+)
+plot_oxgenes_tiff(
+  data = summary_data %>% filter(DOSE == 50),
+  xvar = "TIME",
+  yvar = "mean_l2fc",
+  ymin = "mean_l2fc - sd_l2fc",
+  ymax = "mean_l2fc + sd_l2fc",
+  colorvar = "gene_symbol",
+  title = "Time Course of L2FC for human oxidative stress genes",
+  subtitle = "50 \u03BCM cisplatin",
+  xlabel = "Time (h)",
+  ylabel = "Mean l2fc ± SD",
+  filename = paste0(PlotOXdir, "/OSRHUMANGENES50uM.tiff"),
+  width = 10,
+  height = 4,
+  base_theme_override = theme(
+    plot.margin = margin(50, 50, 50, 50),
+    plot.title = element_text(size = 17, face = "bold"),
+    plot.subtitle = element_text(size = 15),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14)
+  ) + base_theme
+)
+plot_oxgenes_tiff(
+  data = summary_data %>% filter(DOSE == 30),
+  xvar = "TIME",
+  yvar = "mean_l2fc",
+  ymin = "mean_l2fc - sd_l2fc",
+  ymax = "mean_l2fc + sd_l2fc",
+  colorvar = "gene_symbol",
+  title = "Time Course of L2FC for human oxidative stress genes",
+  subtitle = "30 \u03BCM cisplatin",
+  xlabel = "Time (h)",
+  ylabel = "Mean l2fc ± SD",
+  filename = paste0(PlotOXdir, "/OSRHUMANGENES30uM.tiff"),
+  width = 10,
+  height = 4,
+  base_theme_override = theme(
+    plot.margin = margin(50, 50, 50, 50),
+    plot.title = element_text(size = 17, face = "bold"),
+    plot.subtitle = element_text(size = 15),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 14)
+  ) + base_theme
+)
+
+```
+

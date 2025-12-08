@@ -1,0 +1,112 @@
+---
+title: "Histopathology scores"
+author: "me"
+date: "2024-11-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, readr, deSolve, conflicted, scales, readxl)
+
+conflict_prefer("filter","dplyr")
+conflict_prefer("sd","stats")
+
+
+vivodir = "../data/in vivo"
+plot_dir = "../Plots&output/histopath"
+
+```
+
+
+```{r}
+hist_qual = read.csv(paste0(vivodir, '/histopath_correct.csv')) %>% select(-1)
+hist_quant = read_xlsx(paste0(vivodir, '/banff_lacdr.xlsx'))
+hist_quant$animal <- sub("^[^_]*_([^_]*).*", "\\1", hist_quant$wsi_file)
+hist_quant$animal <- sub("^0+", "", hist_quant$animal)
+
+hist_tot = merge(hist_qual, hist_quant, by = 'animal')
+meta_rat = read.delim(paste0(vivodir, "/meta_data_BCL.txt")) %>% 
+  filter(LOCATION_ID == "PPT" & CONCENTRATION == 5)
+cis_RATCODE = unique(meta_rat$KIDNEY_CODE)
+length(cis_RATCODE)
+
+hist_tot_cis = hist_tot %>% filter(animal %in% cis_RATCODE)
+hist_tot_control = hist_tot %>% filter(!(animal %in% cis_RATCODE))
+
+columns_to_summarize <- c("bx_ah", "bx_atn", "bx_cg", "bx_cv", "bx_g", "bx_i", 
+                          "bx_ifta", "bx_iifta", "bx_mm", "bx_ptc", "bx_t", 
+                          "bx_ti", "bx_tifta", "bx_tma", "bx_v")
+
+# Group by LBDY and calculate mean and sd for each specified column
+hist_tot_cis_summ <- hist_tot_cis %>%
+  group_by(LBDY) %>%
+  summarise(
+    across(
+      all_of(columns_to_summarize), 
+      list(mean = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE)),
+      .names = "{.col}_{.fn}"
+    )
+  )
+
+hist_tot_control_summ <- hist_tot_control %>%
+  group_by(LBDY) %>%
+  summarise(
+    across(
+      all_of(columns_to_summarize), 
+      list(mean = ~ mean(.x, na.rm = TRUE), sd = ~ sd(.x, na.rm = TRUE)),
+      .names = "{.col}_{.fn}"
+    )
+  ) %>% filter(LBDY != 15)
+```
+#Generate and save plots
+```{r}
+# Add group labels for binding
+hist_tot_cis_summ$group <- "Cisplatin"
+hist_tot_control_summ$group <- "Control"
+
+# Combine into one dataset
+hist_combined <- bind_rows(hist_tot_cis_summ, hist_tot_control_summ)
+
+# Plot function
+plot_score <- function(data, mean_col, score_label, file_name) {
+  sd_col <- sub("_mean$", "_sd", mean_col)
+  png(
+    filename = file.path(plot_dir, paste0(file_name, ".png")),
+    width = 8, height = 6, units = "in", res = 700
+  )
+  
+  p <- ggplot(data, aes(x = LBDY, y = .data[[mean_col]], color = group)) +
+    geom_errorbar(aes(
+      ymin = .data[[mean_col]] - .data[[sd_col]],
+      ymax = .data[[mean_col]] + .data[[sd_col]]
+    ), width = 0.2) +
+    geom_line() +
+    geom_point() +
+    labs(x = "Time (days)", y = paste(score_label, "score"), color = "Treatment") +
+    theme_bw() +
+    theme(
+      axis.text  = element_text(size = 14 * 2),
+      axis.title = element_text(size = 16 * 2),
+      legend.text  = element_text(size = 14),   # half the original multiplied size
+      legend.title = element_text(size = 16)    # half the original multiplied size
+    )
+  
+  print(p)
+  dev.off()
+}
+
+# Generate plots
+plot_score(hist_combined, "bx_atn_mean",   "atn",   "atn_score")
+plot_score(hist_combined, "bx_tifta_mean", "tifta", "tifta_score")
+plot_score(hist_combined, "bx_ifta_mean",  "ifta",  "ifta_score")
+
+cat("Plots saved in:", plot_dir, "\n")
+```
+

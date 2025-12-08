@@ -1,0 +1,327 @@
+---
+title: "invivofitplot"
+author: "Filippo Di Tillio"
+date: "2024-09-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## CRAN packages
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, readr, deSolve, conflicted, loo, scales)
+
+conflict_prefer("filter", "dplyr")
+input_stan = "../Stanresults/invivoqAOP"
+input_data = "../data/in vivo"
+input_pk = "../Stanresults/PK3"
+output_dir = "../Plots&output/in vivo"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+```
+
+#Load data.
+```{r}
+method = "EGs"
+model = "Cisplatinvivo"
+model_suff = ""
+timestamp = "2024-08-07_10-34-00"
+
+
+sumParcis <- read_csv(paste0(input_stan, "/",timestamp,
+                             "/sumPar_cisvivo",timestamp,".csv"))  %>%
+  column_to_rownames(var = "...1") %>% dplyr::slice(-1)
+draws_cis <- read_csv(paste0(input_stan, "/",timestamp,
+                             "/draws_cisvivo",timestamp,".csv")) %>% select(-1)
+
+
+if(method == "IGS"){
+#Load data IGS
+CISQAOP_FDT_vivo <- read_csv(paste0(input_data, '/', "CISQAOP_FDT_2024_invivodata_IGS.csv")) %>%
+    select(-1)
+} else if(method == "EGs"){
+#Load data EGs
+CISQAOP_FDT_vivo <- read_csv(paste0(input_data, '/', "CISQAOP_FDT_2024_invivodata_EGs2.csv")) %>%
+  select(-1) }
+
+PK_pars = read.csv(paste0(input_pk, "/2024-07-22_15-15-34/fit_pk_summary.csv")) %>% select(-1) %>%
+  column_to_rownames(var = "variable")
+
+
+loo = readRDS(paste0(input_stan,"/",timestamp, "/loo_result",timestamp,".rds"))
+
+
+plot(loo, diagnostic = "k", label_points = FALSE)
+pareto_k_table(loo)
+length(pareto_k_values(loo))
+loo$estimates
+
+#check which points have Inf pareto k value
+ length(which(loo$pointwise[,"influence_pareto_k"] == "Inf"))
+```
+
+
+#Import ODEs file
+```{r}
+source("./ODEs.R")
+```
+
+
+```{r}
+source_dir <- paste0(input_stan, "/",timestamp)
+target_dir <- output_dir
+
+# Function to copy the folder and its contents
+copy_folder <- function(from, to) {
+  if (!dir.exists(to)) {
+    dir.create(to, recursive = TRUE)
+  }
+  files <- list.files(from, full.names = TRUE)
+  file.copy(files, to, recursive = TRUE)
+}
+
+# Copy the source directory to the target directory
+target_subdir <- file.path(target_dir, basename(source_dir))
+copy_folder(source_dir, target_subdir)
+```
+
+```{r}
+# Load the fit object from the RDS file
+fit <- readRDS(paste0(input_stan, "/",timestamp, "/fitvivo.rds"))
+
+# Extract draws and convert to data frame with iteration and chain
+draws_df <- fit$draws(format = "df", variables = c("k_kidDD", "d_DD", "maxdeath", "hillDD", "k_hillnec","d_CD","k_CDINF","d_INF","k_INFKF","hillKF","h1")) %>%
+  mutate(.iteration = rep(1:(nrow(.) / max(.chain)), times = max(.chain)),
+         .chain = rep(1:max(.chain), each = nrow(.) / max(.chain)))
+
+# Custom labels using expressions for ggplot2
+custom_labels <- c(
+  k_kidDD = "k[kidDD]",
+  d_DD = "d[DD]",
+  hillDD = "k[hillDD]",
+  k_hillnec = "k[hillnec]",
+  maxdeath = "maxdeath",
+  d_CD = "d[CD]",
+  k_CDINF = "k[CDINF]",
+  d_INF = "d[INF]",
+  k_INFKF = "k[INFKF]",
+  hillKF = "k[hillKF]",
+  h1 = "h"
+)
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 18),  # Larger axis titles
+    strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 18), # Larger legend title
+    legend.text = element_text(size = 18),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0),  # Increase margin around legend
+    panel.spacing = unit(1.5, "lines"),  # Increase space between facets to prevent overlap
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels to prevent overlap
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed)), ncol = 6) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+# Create density plot
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Save the plots as TIFF files
+tiff(paste0(target_subdir, "/", "Trace-plot_vivo", ".tiff"), units = "in", width = 12, height = 6, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(target_subdir, "/", "Density-plot_vivo", ".tiff"), units = "in", width = 9, height = 9, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+
+tiff(paste0(target_subdir, "/", "PSIS_plot", ".tiff"), units = "in", width = 12, height = 6, res = 700, compression = 'lzw')
+plot(loo, diagnostic = "k", label_points = FALSE,
+     cex.axis = 7,    # Doubles the size of tick labels
+     cex.lab = 7,     # Doubles the size of axis labels
+     cex.main = 7)    # Doubles the size of the title
+dev.off()
+
+```
+
+
+```{r}
+# Define a function to generate and save plots
+generate_plots <- function(KE, KE_full, y_max, draws_cis, data, model, model_suff, output_dir) {
+  
+  # Define the time sequence
+  finish <- seq(0, 700, by = 1)
+  
+  # Filter data for the specific KE
+  filtered_data <- data %>% filter(StateVar == paste0(KE))
+  
+  # Define the file name and path
+  file_name <- paste0(KE, "_plot.tiff")
+  file_path <- file.path(output_dir, file_name)
+  
+  # Save the plot as a TIFF file
+  tiff(filename = file_path, units = "in", width = 6, height = 6, res = 700, compression = 'lzw')
+  
+  # Set up the plot
+  par(mar = c(5, 6, 4, 2) + 0.1) # Adjust margins
+  plot(x = filtered_data$TIMEPOINT, y = filtered_data$means, type = "p", pch = 19, 
+       ylab = paste0(KE, " (a.u.)"), xlab = "Time (h)", xlim = c(0, 700), 
+       ylim = c(0, y_max), main = paste0(KE_full, ", 5mg/kg cisplatin"), 
+       cex.lab = 3, cex.axis = 2, cex.main = 1.5)
+  
+  # Add error bars
+  arrows(filtered_data$TIMEPOINT, filtered_data$means - filtered_data$sds, 
+         filtered_data$TIMEPOINT, filtered_data$means + filtered_data$sds, 
+         length = 0, angle = 90, code = 3, lty = 1, lwd = 1.2)
+  
+  # Initialize the simulation results matrix
+  simulation_results <- matrix(ncol = length(finish), nrow = 250)
+  
+  # Run simulations
+  for (i in 1:250) {
+    
+    # Sample random parameters
+    k <- sample(1:nrow(draws_cis), 1)
+    modelParams <- setModelParameters_vivo(paste0(model,model_suff), draws_cis, k)
+    pars <- modelParams$pars
+    inistate <- modelParams$inistate
+    
+    # Run the model
+    out <- ode(y = inistate, times = finish, func = get(model), parms = pars)
+    
+    # Plot simulation lines
+    lines(data.frame(out) %>% select(time, all_of(KE)), col = alpha("blue", 0.1), lty = 1)
+    
+    # Store simulation results
+    simulation_output <- as.data.frame(out)
+    simulation_results[i, ] <- simulation_output[[KE]]
+  }
+  
+  # Calculate and plot the mean results
+  mean_results <- apply(simulation_results, 2, mean)
+  lines(finish, mean_results, type = "l", col = "red", lwd = 2)
+  
+  # Add color bands for specific KEs
+  if (KE == "CD" | KE == "KF") {
+    # Add color bands in the background
+    rect(-100, 0, 750, 1/4, col = alpha("#FFD700", 0.3), border = NA)  # Light Orange
+    rect(-100, 1/4, 750, 2/4, col = alpha("#FFA07A", 0.3), border = NA)  # Light Salmon
+    rect(-100, 2/4, 750, 3/4, col = alpha("#FF4500", 0.3), border = NA)  # Red-Orange
+    rect(-100, 3/4, 750, 1, col = alpha("#FF0000", 0.3), border = NA)    # Red
+    
+    # Add a legend for the color scale
+    legend(ifelse(KE == "KF", "topleft", "topright"), 
+           legend = c("Minimal", "Mild", "Moderate", "Marked"), 
+           fill = alpha(c("#FFD700", "#FFA07A", "#FF4500", "#FF0000"), 0.3))
+  }
+  
+  # Close the TIFF device
+  dev.off()
+}
+
+# Define the main plotting process for each KE
+plot_all_KEs <- function() {
+  if (method == "EGs") {
+  # Define the KE mappings and max y-values
+  KE_mappings <- list(
+    DD = list(full = "DNA Damage", y_max = 5),
+    CD = list(full = "Necrosis", y_max = 1),
+    INF = list(full = "Inflammation", y_max = 8),
+    KF = list(full = "Fibrosis", y_max = 1)
+  )} else if (method == "IGS") {
+    KE_mappings <- list(
+    DD = list(full = "DNA Damage", y_max = 5),
+    CD = list(full = "Necrosis", y_max = 1),
+    INF = list(full = "Inflammation", y_max = 4),
+    KF = list(full = "Fibrosis", y_max = 1))
+  }
+  
+  # Specify the output directory for the plots
+  output_dir <- target_subdir
+  
+  # Create the output directory if it does not exist
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Iterate over each KE and generate plots
+  for (KE in names(KE_mappings)) {
+    KE_full <- KE_mappings[[KE]]$full
+    y_max <- KE_mappings[[KE]]$y_max
+    generate_plots(KE, KE_full, y_max, draws_cis, CISQAOP_FDT_vivo, model, model_suff, output_dir)
+  }
+}
+
+# Call the plotting function to generate plots
+plot_all_KEs()
+
+```
+
+#Supplementary: show that module 7m (Inflammation) is not active (dose response data).
+```{r}
+
+upload_DR_vivo_PPT = read.delim(paste0(input_data,'/upload_DR_vivo_PPT.txt'), sep = " ") %>% mutate(time = 72, experiment = str_remove(experiment, "_conc\\d+(\\.\\d+)?"))
+
+dr_data_PPT = read.delim(paste0(input_data,                        '/DEGsfiltered_vs_correctControl_clean_transformed_corrClean_ver6_normSplit_replicateSplit.txt'), sep = "\t") %>% filter(LOCATION_ID == "PPT")
+
+EGS_dr_PPT_vivo = read.delim(paste0(input_data,'/EGS_dr_PPT_vivo.txt'), sep = "\t")
+
+EGS_dr_PPT_vivo_7m = EGS_dr_PPT_vivo %>% filter(module == "rKIDNEY_7m")
+
+# Open a high-resolution TIFF file for saving the plot
+tiff('../Plots&output/QIVIVE/7mDR.tiff', 
+     width = 9, height = 7, units = "in", res = 700)
+
+ggplot(data = EGS_dr_PPT_vivo_7m) + 
+  geom_point(aes(x = conc_level, y = eg_score)) + 
+  theme_bw() + 
+  labs(x = "Dose Level", y = "Eigengene Score", title = "Module rKIDNEY:7m") +
+  theme(
+    title = element_text(size = rel(2.25)),
+    axis.title.x = element_text(size = rel(2)),
+    axis.title.y = element_text(size = rel(2)),
+    axis.text.x = element_text(size = rel(2)),
+    axis.text.y = element_text(size = rel(2))
+  )
+
+# Close the TIFF file
+dev.off()
+```
+

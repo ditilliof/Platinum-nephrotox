@@ -1,0 +1,144 @@
+---
+title: "BMD_analysis"
+author: "Filippo Di Tillio"
+output: html_document
+date: "2025-09-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+```
+
+
+```{r}
+pacman::p_load(tidyverse, readr, conflicted, writexl)
+
+if (!require(drc)) install.packages("drc", dependencies = TRUE)
+library(drc)
+
+conflict_prefer("filter","dplyr")
+conflict_prefer("select","dplyr")
+conflict_prefer("sd","stats")
+
+data_vitro = "../data/in vitro"
+data_vivo = "../data/in vivo"
+out_dir <- "../Plots&output/BMD_results"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+```
+
+
+```{r}
+Necro_AOP = read_csv(paste0(data_vitro,"/NecroAOPnocc_fulltime.csv")) %>% select(-1) 
+
+Necro_AOP_67 = Necro_AOP %>% filter(TIME == 67)
+
+
+write.table(Necro_AOP_67, file.path(data_vitro, "Necro_BMD_67_clean.txt"),
+            sep = "\t", row.names = FALSE, col.names = TRUE,
+            fileEncoding = "UTF-8", quote = FALSE)
+
+
+vivo_CD_67 = read.delim(paste0(data_vivo,"/vivo_CD_67.txt"))
+
+```
+
+
+```{r}
+# +++ One function that fits all candidate drc models, plots each, and returns a tidy summary +++
+run_best_drc_model <- function(data, formula, xvar, yvar, name){
+  models <- list(
+    LL2 = try(drm(formula, data = data, fct = LL.2()), silent = TRUE),
+    LL3 = try(drm(formula, data = data, fct = LL.3()), silent = TRUE),
+    LL4 = try(drm(formula, data = data, fct = LL.4()), silent = TRUE),
+    LL5 = try(drm(formula, data = data, fct = LL.5()), silent = TRUE),
+    W14 = try(drm(formula, data = data, fct = W1.4()), silent = TRUE),
+    W24 = try(drm(formula, data = data, fct = W2.4()), silent = TRUE)
+  )
+  ok <- vapply(models, function(m) !inherits(m, "try-error"), TRUE)
+
+  bic_values <- sapply(models, function(m) if (!inherits(m,"try-error")) BIC(m) else Inf)
+  best_name <- names(which.min(bic_values))
+  best_model <- models[[best_name]]
+
+  # Save best summary & ED10
+  readr::write_lines(capture.output(summary(best_model)),
+                     file.path(out_dir, paste0(name, "_", best_name, "_summary.txt")))
+  ED10_best <- ED(best_model, 10, interval = "delta")
+  readr::write_lines(capture.output(ED10_best),
+                     file.path(out_dir, paste0(name, "_", best_name, "_ED10.txt")))
+  utils::write.csv(as.data.frame(ED10_best),
+                   file.path(out_dir, paste0(name, "_", best_name, "_ED10.csv")))
+
+  # Plot each model with requested titles
+  xmin <- 0; xmax <- max(data[[xvar]], na.rm = TRUE)
+  grid <- data.frame(tmpx = seq(xmin, xmax, length.out = 300)); names(grid) <- xvar
+  title_prefix <- if (grepl("vivo", name, TRUE)) "BMD modeling in vivo cell death - "
+                  else "BMD modeling in vitro cell death - "
+
+  for (mname in names(models)[ok]) {
+    m <- models[[mname]]
+    pred <- as.data.frame(predict(m, newdata = grid)); names(pred) <- "fit"
+    pf <- cbind(grid, pred)
+    p <- ggplot(data, aes_string(xvar, yvar)) +
+      geom_point(size = 2) +
+      geom_line(data = pf, aes_string(xvar, "fit")) +
+      labs(title = paste0(title_prefix, mname),
+           x = expression("Concentration ("*mu*"M)"),
+           y = "Cell Death (a.u.)") +
+      theme_bw()
+    tiff(file.path(out_dir, paste0(name, "_", mname, "_curve.tiff")),
+         width = 6, height = 4.5, units = "in", res = 300, compression = "lzw")
+    print(p); dev.off(); print(p)
+  }
+
+  # Build a tidy summary table for Excel (one row per parameter)
+  make_rowblock <- function(mname, m){
+    if (inherits(m, "try-error")) return(NULL)
+    co <- coef(m); if (is.null(names(co))) names(co) <- paste0("par", seq_along(co))
+    bic <- BIC(m)
+    ed <- try(ED(m, 10, interval = "delta"), silent = TRUE)
+    ed_df <- if (inherits(ed, "try-error")) data.frame(ED10=NA, LCL=NA, UCL=NA) else {
+      d <- as.data.frame(ed); names(d) <- sub("^Estimate$", "ED10", names(d))
+      data.frame(ED10 = d$ED10[1], LCL = d$Lower[1], UCL = d$Upper[1])
+    }
+    data.frame(
+      model = mname,
+      parameter = names(co),
+      estimate = unname(co),
+      BIC = bic,
+      ED10 = ed_df$ED10, ED10_LCL = ed_df$LCL, ED10_UCL = ed_df$UCL,
+      row.names = NULL
+    )
+  }
+  summary_tbl <- do.call(rbind, mapply(make_rowblock, names(models), models, SIMPLIFY = FALSE))
+  invisible(list(model = best_model, ED10 = ED10_best, best_model = best_name,
+                 BIC = bic_values, summary_tbl = summary_tbl))
+}
+
+res_vitro <- run_best_drc_model(Necro_AOP_67, mean ~ DOSE, "DOSE", "mean", "model_vitro")
+res_vivo  <- run_best_drc_model(vivo_CD_67,  CD   ~ conc, "conc", "CD",   "model_vivo")
+
+writexl::write_xlsx(
+  list(
+    in_vitro = res_vitro$summary_tbl,
+    in_vivo  = res_vivo$summary_tbl
+  ),
+  path = file.path(out_dir, "BMD_model_summaries.xlsx")
+)
+
+# Console prints (optional)
+summary(res_vitro$model); summary(res_vivo$model)
+print(res_vitro$ED10); print(res_vivo$ED10)
+
+
+```
+
+
+

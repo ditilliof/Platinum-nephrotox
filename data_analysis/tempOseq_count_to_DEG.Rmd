@@ -1,0 +1,691 @@
+---
+title: "tempO-seq: count to DEG"
+author: "IBBruns"
+date: "2023-05-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## BioConductor packages
+```{r}
+if (!require("BiocManager", quietly = T)) {
+    install.packages("BiocManager")
+}
+if (!require("DESeq2", quietly = T)) {
+    BiocManager::install("DESeq2", force = TRUE)
+}
+if (!require("PCAtools", quietly = T)) {
+    BiocManager::install("PCAtools", force = TRUE)
+}
+library(DESeq2)
+```
+
+## CRAN packages
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, ggpubr, corrr, ggfortify, ggcorrplot, ggdendro, data.table,
+    tictoc, R.utils, conflicted)
+
+conflict_prefer("filter", "dplyr")
+```
+
+## Set directories
+```{r}
+input_path <- "../data/in vitro"
+output_path <- "../data/in vitro"
+input_ort <- "../data/in vivo"
+
+study_NR <- "EUT046"
+```
+
+## Settings
+```{r}
+options(scipen = 999)
+```
+
+
+## Import
+### Count data
+At the end of this chunk you must have `countdata_raw` as an object
+```{r}
+
+countdata_raw <- read_csv(file = paste0(input_path,"/Counts per gene per sample_raw_",study_NR,".csv"))
+countdata_raw <- countdata_raw[,!(grepl("JRep", t(colnames(countdata_raw))))]
+countdata_raw<- as.data.frame(countdata_raw)
+names(countdata_raw)[1] = "PROBE_ID"
+
+```
+
+
+### Metadata
+```{r}
+library(readxl)
+
+metadata <- read_excel(paste0(input_path,"/Metadata_RPTEC_cisplatin.xlsx")) # read the metadata
+metadata <- metadata[!(grepl("RPTEC-Jennings", t(metadata[,"SAMPLE"]))),]
+metadata <- as.data.frame(metadata)
+```
+
+
+## QC - sample size
+```{r}
+countdata_raw_sample_size <- tibble(SAMPLE_ID = names(countdata_raw %>%
+    select(where(is.numeric))), SAMPLE_SIZE = apply(countdata_raw %>%
+    select(where(is.numeric)), MARGIN = 2, sum)) %>%
+    left_join(metadata, by = "SAMPLE_ID")
+
+```
+
+
+```{r}
+countdata_raw_sample_size_samples <- countdata_raw_sample_size %>%
+    filter(COMPOUND_ABBR != "MAQC")
+
+ggplot(data = countdata_raw_sample_size_samples, mapping = aes(x = TIME, y = SAMPLE_SIZE)) +
+    geom_boxplot() + facet_grid(rows = vars(PLATE_NR), cols = vars(REPLICATE)) + theme_bw() +
+    labs(title = "countdata_raw_sample_size_samples")
+
+
+ggplot(data = countdata_raw_sample_size_samples, mapping = aes(x = TIME, y = SAMPLE_SIZE, group=TIME)) +
+    geom_boxplot() + facet_grid(cols = vars(REPLICATE)) + 
+    theme_bw() +
+    labs(title = "sample size raw samples")
+```
+
+
+
+```{r}
+ggplot(data = countdata_raw_sample_size_samples, mapping = aes(x = TIME, y = SAMPLE_SIZE, group=TIME)) +
+    geom_point() + geom_point(data = countdata_raw_sample_size_samples %>%
+    filter(SAMPLE_SIZE < 1000000), color = "red") + geom_hline(yintercept = 1000000,
+    linewidth = 1, color = "red") + facet_wrap(~REPLICATE) + theme_bw() + labs(title = "sample size raw samples")
+```
+
+## Countdata processing
+### Sample size filter
+
+```{r}
+# Identify samples below sample_size_threshold
+sample_size_threshold <- 0 # set to 0 if you don't want to remove samples with low sample size
+
+low_sample_size <- countdata_raw_sample_size %>%
+    filter(SAMPLE_SIZE <= sample_size_threshold)
+
+low_sample_size_samples <- low_sample_size %>%
+    select(SAMPLE_ID, SAMPLE_SIZE) %>%
+    pull(SAMPLE_ID)
+
+# filter countdata_raw_minSeqControl and metadata_minSeqControl for the low
+# sample size samples
+countdata_raw_minLowSampleSize <- countdata_raw %>%
+    select(-all_of(low_sample_size_samples))
+metadata_minLowSampleSize <- metadata %>%
+    filter(!SAMPLE_ID %in% low_sample_size_samples)
+
+low_sample_size %>%
+    select(SAMPLE_ID, SAMPLE_SIZE)
+
+```
+
+
+## Normalization 
+### CPM normalization
+CPM normalize `countdata_raw`
+```{r}
+cpm_normalization <- function(x) {
+    x/sum(x) * 1000000
+}
+
+```
+
+Wrangle
+```{r}
+countdata_cpm <- data.frame(apply(countdata_raw %>% column_to_rownames(var="PROBE_ID"), 2, cpm_normalization))
+countdata_cpm_minLowSampleSize <- data.frame(apply(countdata_raw_minLowSampleSize %>% column_to_rownames(var="PROBE_ID"),
+    2, cpm_normalization))
+
+```
+
+### Relevance filter
+#### Generate function
+```{r}
+relevance_filter <- function(countdata, metadata) {
+
+    # countdata is a dataframe with probe_id as rownames and columns as samples
+    # metadata is a dataframe containing sample_id and mean_id columns
+
+    countdata[countdata >= 1] <- 1
+    countdata[countdata < 1] <- 0
+
+    countdata <- melt.data.table(data = data.table(countdata %>%
+        rownames_to_column(var = "PROBE_ID")), id.vars = "PROBE_ID", measure.vars = colnames(countdata),
+        variable.name = "SAMPLE_ID", value.name = "count")
+
+    countdata <- countdata %>%
+        left_join(y = metadata %>%
+            select(SAMPLE_ID, TREATMENT_ID), by = "SAMPLE_ID")
+
+    # number samples per mean_id group
+    output <- countdata %>%
+        group_by(PROBE_ID, TREATMENT_ID) %>%
+        summarise(count_sum = sum(count)) %>%
+        left_join(y = countdata %>%
+            distinct(SAMPLE_ID, TREATMENT_ID) %>%
+            group_by(TREATMENT_ID) %>%
+            mutate(n_TREATMENT_ID = n()) %>%
+            distinct(TREATMENT_ID, n_TREATMENT_ID), by = "TREATMENT_ID") %>%
+        ungroup() %>%
+        mutate(keep = if_else(condition = count_sum >= n_TREATMENT_ID * 0.75, true = TRUE,
+            false = FALSE)) %>%
+        group_by(PROBE_ID) %>%
+        summarise(keep = sum(keep)) %>%
+        mutate(keep = if_else(keep >= 1, true = TRUE, false = FALSE))
+
+    return(output)
+
+}
+```
+
+
+#### Tag probes
+```{r}
+# Execute relevance filter to identify low cpm probes
+probe_id_table <- relevance_filter(countdata = countdata_cpm_minLowSampleSize,
+    metadata = metadata_minLowSampleSize)
+
+# filter countdata_cpm_minSeqControl_minLowSampleSize for good probes
+countdata_cpm_minLowSampleSize_minLowCpmProbe <- countdata_cpm_minLowSampleSize %>%
+    rownames_to_column(var = "PROBE_ID") %>%
+    filter(PROBE_ID %in% (probe_id_table %>%
+        filter(keep == TRUE) %>%
+        pull(PROBE_ID)))
+
+# filter countdata_raw_minSeqControl_minLowSampleSize for good probes
+countdata_raw_minLowSampleSize_minLowCpmProbe <- countdata_raw_minLowSampleSize %>%
+    # rownames_to_column(var = "PROBE_ID") %>%
+    filter(PROBE_ID %in% (probe_id_table %>%
+        filter(keep == TRUE) %>%
+        pull(PROBE_ID)))
+
+
+```
+
+#### Good probes:
+```{r}
+# Number of included probes
+probe_id_table %>%
+    filter(keep == TRUE) %>%
+    nrow()
+
+```
+#### Probes that are included: 
+```{r}
+good_probes <- probe_id_table %>%
+    filter(keep == TRUE) %>%
+    pull(PROBE_ID)
+#good_probes
+```
+
+#### Bad probes
+```{r}
+probe_id_table %>%
+    filter(keep == FALSE) %>%
+    nrow()
+```
+
+```{r}
+bad_probes <- probe_id_table %>%
+    filter(keep == FALSE) %>%
+    pull(PROBE_ID)
+#bad_probes
+```
+
+
+## Update gene symbol 
+```{r}
+
+manifest <- Temposeq_manifest_1_2_realignment <- read.delim(paste0(input_path,"/Temposeq_manifest_1.2_realignment.txt"))
+# for cpm data
+countdata_cpm_minLowSampleSize_minLowCpmProbe_NewGenesymbols <- left_join(x=countdata_cpm_minLowSampleSize_minLowCpmProbe,
+                                                                          y=manifest %>%
+                                                                            dplyr::select("PROBE_ID" = "Probe_ID", "GENE_SYMBOL" = "gene_symbol"), 
+                                                                          by="PROBE_ID") %>%
+  select("GENE_SYMBOL", everything()) %>%
+  drop_na("GENE_SYMBOL")
+
+
+# for raw data
+countdata_raw_minLowSampleSize_minLowCpmProbe_NewGenesymbols <- left_join(x=countdata_raw_minLowSampleSize_minLowCpmProbe,
+                                                                          y=manifest %>%
+                                                                            dplyr::select("PROBE_ID" = "Probe_ID", "GENE_SYMBOL" = "gene_symbol"), 
+                                                                          by="PROBE_ID") %>%
+  select("GENE_SYMBOL", everything()) %>%
+  drop_na("GENE_SYMBOL")
+
+```
+
+
+
+## Sum count gene_symbol
+```{r}
+# sum cpm countdata per gene_symbol
+countdata_cpm_minLowSampleSize_minLowCpmProbe_sumCountGene <- countdata_cpm_minLowSampleSize_minLowCpmProbe_NewGenesymbols %>%
+    group_by(GENE_SYMBOL) %>%
+    summarise(across(where(is.numeric), sum), .groups = "drop")
+
+# sum raw countdata per gene_symbol
+countdata_raw_minLowSampleSize_minLowCpmProbe_sumCountGene <- countdata_raw_minLowSampleSize_minLowCpmProbe_NewGenesymbols %>%
+    group_by(GENE_SYMBOL) %>%
+    summarise(across(where(is.numeric), sum), .groups = "drop")
+
+
+```
+
+
+## Save processed counts data
+```{r}
+countdata_processed <- 
+  
+  list(
+    
+    # raw
+    "countdata_raw" = countdata_raw,
+    "countdata_raw_minLowSampleSize" = countdata_raw_minLowSampleSize,
+    "countdata_raw_minLowSampleSize_minLowCpmProbe" = countdata_raw_minLowSampleSize_minLowCpmProbe,
+    "countdata_raw_minLowSampleSize_minLowCpmProbe_sumCountGene" = countdata_raw_minLowSampleSize_minLowCpmProbe_sumCountGene,
+    
+    # cpm
+    "countdata_cpm" = countdata_cpm,
+    "countdata_cpm_minLowSampleSize" = countdata_cpm_minLowSampleSize,
+    "countdata_cpm_minLowSampleSize_minLowCpmProbe" = countdata_cpm_minLowSampleSize_minLowCpmProbe,
+    "countdata_cpm_minLowSampleSize_minLowCpmProbe_sumCountGene" = countdata_cpm_minLowSampleSize_minLowCpmProbe_sumCountGene,
+    
+    # sample filter
+    "low_sample_size" = low_sample_size,
+    
+    # probe filter
+    "relevance_filter_good_probes" = good_probes,
+    "relevance_filter_bad_probes" = bad_probes
+    
+  )
+
+
+
+write_rds(x = countdata_processed, file = file.path(output_path, paste0(study_NR, "countdata_processed.rds")))
+```
+
+
+## PCA 
+
+```{r}
+library(PCAtools)
+
+pca_countdata <- countdata_cpm_minLowSampleSize_minLowCpmProbe_sumCountGene %>% 
+  column_to_rownames(var = 'GENE_SYMBOL') 
+
+pca_metadata <- metadata_minLowSampleSize %>% column_to_rownames(var = 'SAMPLE_ID') 
+all(colnames(pca_countdata) == rownames(pca_metadata))
+
+# reorder metadata
+order_idx <- match(rownames(pca_metadata), colnames(pca_countdata))
+pca_countdata_reorder <- pca_countdata[,order_idx]
+all(colnames(pca_countdata_reorder) == rownames(pca_metadata)) # now they are the same
+
+
+# generate PCA
+pca_object <- pca(mat = pca_countdata_reorder, metadata = pca_metadata, scale = F, center = T) 
+biplot(pcaobj = pca_object) 
+screeplot(pca_object, axisLabSize = 18, titleLabSize = 22) 
+pairsplot(pcaobj = pca_object) 
+pca_object 
+
+```
+
+
+## DESEQ2
+### Conrast table
+Treatment plate wise (R1 + R2 + R3) vs control (all the controls in the entire experiment)
+
+```{r}
+metadata_analysis <- metadata_minLowSampleSize %>%
+    select(SAMPLE_ID, TREATMENT_ID, TIME, REPLICATE, PLATE_NR, COMPOUND, COMPOUND_ABBR, TREATMENT, SAMPLE) %>%
+  mutate(MEAN_ID = ifelse(COMPOUND_ABBR %in% c("MEDIUM", "DMSO", "STARVMEDIUM", "DMEM", "NaCl"), TREATMENT_ID, SAMPLE))
+
+ 
+
+ 
+
+contrast_control <- metadata_analysis %>%
+    filter(COMPOUND_ABBR %in% c("MEDIUM", "DMSO", "STARVMEDIUM", "DMEM", "NaCl")) %>%
+    distinct(MEAN_ID, TIME, COMPOUND_ABBR)
+
+ 
+
+contrast_treatment <- metadata_analysis %>%
+    filter(!COMPOUND_ABBR %in% c("MEDIUM", "DMSO", "STARVMEDIUM", "DMEM", "NaCl")) %>%
+    distinct(MEAN_ID, TIME, COMPOUND_ABBR, REPLICATE)
+
+ 
+
+ 
+
+contrast_table <- left_join(x = contrast_treatment %>% 
+                              select(MEAN_ID_EXPERIMENT = MEAN_ID, TIME, EXPERIMENT = COMPOUND_ABBR, REPLICATE),
+                            y = contrast_control %>%
+                              select(MEAN_ID_CONTROL = MEAN_ID, TIME, CONTROL=COMPOUND_ABBR), 
+                            by = c("TIME")) %>%
+  distinct()
+
+ 
+
+ 
+
+contrast_table %>%
+    select(MEAN_ID_EXPERIMENT, MEAN_ID_CONTROL) %>%
+    as_tibble() %>%
+    print(n = 1000)
+
+contrast_table <- contrast_table[1:162,]
+
+```
+### Tidy check
+```{r}
+tidy_check = function(countdata, metadata) {
+    # We assume first column will contain the row names (tidy = T in
+    # DESeqDataSetFromMatrix)
+    names_count = names(countdata)[-1]
+    # Not obligatory for DEseq2, but we want row names in the first column
+    names_meta = metadata[[1]]
+    # Test if the names from the count and metadata are identical (same
+    # entries, same order)
+    identical = identical(names_count, names_meta)
+    # If not identical, do we have the same entries (ignores duplicates)
+    setequal = identical || setequal(names_count, names_meta)
+    # Test for duplicates (in theory, but very unlikely, this can also happen
+    # if identical is true)
+    has_duplicates = anyDuplicated(names_meta) > 0
+    # If the names are not identical, but we're looking at the same entries
+    # without duplicates, then the problem is the order of the entries
+    problem_is_order = !identical && setequal && !has_duplicates
+    # List possibilities to test
+    input = list(identical = identical, setequal = setequal, has_duplicates = has_duplicates,
+        problem_is_order = problem_is_order)
+
+    if (input$identical & input$setequal & !input$has_duplicates & !input$problem_is_order) {
+        return(TRUE)
+    } else {
+        print(input)
+        return(FALSE)
+    }
+}
+```
+
+
+### Run DESEQ
+Inputs are:
+contrast = contrast_table
+countdata = countdata_raw_minSeqControl_minLowSampleSize_minLowCpmProbe_sumCountGene
+metadata = metadata_minSeqControl_minLowSampleSize
+log2fc_threshold = 1.5
+padj_threshold = 0.05
+
+```{r}
+
+padj_threshold <- 0.05
+
+log2fc_threshold <- 1.5
+
+ 
+
+deseq_output = tibble()
+
+deg_overview = tibble()
+
+ 
+
+ 
+
+deseq_function = function(contrast, countdata, metadata, log2fc_threshold, padj_threshold){
+
+
+
+  all_experiment <- unique(contrast_table$EXPERIMENT)
+
+
+  for(i in all_experiment){
+
+
+    print(i)
+
+
+    loop_contrast <- contrast %>% 
+
+      filter(EXPERIMENT == i)
+
+
+    loop_metadata <- metadata %>% 
+
+      filter(MEAN_ID %in% c(loop_contrast$MEAN_ID_EXPERIMENT,loop_contrast$MEAN_ID_CONTROL))
+
+
+    loop_countdata = countdata %>% 
+
+      select(GENE_SYMBOL, loop_metadata$SAMPLE_ID)
+
+
+
+    if(nrow(loop_metadata) == ncol(loop_countdata)-1){
+
+
+      if(tidy_check(countdata = loop_countdata, metadata = loop_metadata)){
+
+        loop_deseq <- DESeqDataSetFromMatrix(countData =  as.data.frame(loop_countdata),
+
+                                             colData = loop_metadata %>% mutate(MEAN_ID = as.factor(MEAN_ID)),
+
+                                             design = ~ MEAN_ID,
+
+                                             tidy = TRUE)
+
+
+        sizeFactors(loop_deseq) <- colSums(column_to_rownames(loop_countdata, var = "GENE_SYMBOL"))/1E6
+
+
+        loop_deseq <- DESeq(loop_deseq)
+
+      } else {
+
+        break
+
+      }
+
+    }
+
+
+    for (j in 1:nrow(loop_contrast)){
+
+
+      # main loop output
+
+
+      loop_deseq_output <- data.frame(
+
+        results(object = loop_deseq, 
+
+                contrast = c("MEAN_ID", loop_contrast$MEAN_ID_EXPERIMENT[j], loop_contrast$MEAN_ID_CONTROL[j]))) %>%
+
+        rownames_to_column(var = "GENE_SYMBOL") %>%
+
+        mutate(MEAN_ID_EXPERIMENT = loop_contrast$MEAN_ID_EXPERIMENT[j], 
+
+               MEAN_ID_CONTROL = loop_contrast$MEAN_ID_CONTROL[j])
+
+
+      deseq_output <- deseq_output %>% bind_rows(loop_deseq_output)
+
+
+      # deg overview output
+
+
+      loop_deg_overview <- tibble(
+
+        MEAN_ID_EXPERIMENT = unique(loop_deseq_output$MEAN_ID_EXPERIMENT),
+
+        deg_up = loop_deseq_output %>% 
+
+          filter(padj < padj_threshold & abs(log2FoldChange) >= log2(log2fc_threshold)) %>% nrow(),
+
+        deg_down = loop_deseq_output %>% 
+
+          filter(padj < padj_threshold & abs(log2FoldChange) < log2(log2fc_threshold)) %>% nrow()
+
+
+      )
+
+
+      deg_overview <- deg_overview %>% bind_rows(loop_deg_overview)
+
+    }
+
+  } # loop end
+
+
+
+  output <- list("deseq_output" = deseq_output,
+
+                 "deg_overview" = deg_overview)
+
+
+  return(output)
+
+} # function end
+
+ 
+
+ 
+
+deseq_output <- deseq_function(contrast = contrast_table, 
+
+                               countdata = countdata_raw_minLowSampleSize_minLowCpmProbe_sumCountGene, 
+
+                               metadata = metadata_analysis, 
+
+                               log2fc_threshold = 1.5, 
+
+                               padj_threshold = 0.05)
+
+
+```
+
+```{r}
+deseq_output$deg_overview %>% 
+  print(n = 1000)
+
+```
+### Plot
+```{r}
+ggplot(deseq_output$deg_overview, aes(x=MEAN_ID_EXPERIMENT, y=deg_up)) +
+  geom_bar(stat="identity") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+plot_data <- deseq_output$deg_overview %>% 
+  separate(col=MEAN_ID_EXPERIMENT, into=c("celltype", "treatment", "timepoint", "concentration"), sep="_") %>%
+  pivot_longer(cols=c("deg_up", "deg_down"))
+plot_data$concentration <- factor(plot_data$concentration, levels=c(" 0,02uM", " 0,1uM", " 0,5uM", " 1uM", " 2uM", " 5uM", " 10uM", " 20uM", " 40uM")) # CYCLOSPORIN
+#plot_data$concentration <- factor(plot_data$concentration, levels=c(" 0.1uM", " 0.5uM", " 1uM", " 2.5uM", " 5uM", " 10uM", " 20uM", " 30uM", " 50uM")) # CISPLATIN
+plot_data$timepoint <- factor(plot_data$timepoint, levels=c(" 4hr", " 8hr", " 16hr", " 24hr", " 48hr", " 72hr")) # timepoints are same for both
+
+# create plot for all timepoints
+ggplot(plot_data, aes(x=concentration, y=value, fill=name)) +
+  geom_bar(stat="identity") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.title = element_blank()) +
+  facet_wrap(~timepoint) +
+  labs(title="DEGs per timepoint & concentration", 
+       y="number of DEGs")
+
+
+```
+
+
+### Save output
+
+
+```{r}
+# deseq_output$deg_overview
+write_rds(x = deseq_output$deg_overview, file = file.path(output_path, paste0(study_NR, "_deseq_output_overview.rds")))
+
+# unformatted deseq_output
+write_rds(x = deseq_output$deg_overview, file = file.path(output_path, paste0(study_NR, "_deseq_output_unformatted.rds")))
+
+# expression_long
+expression_long <- deseq_output$deseq_output %>%
+    select(sample_id = MEAN_ID_EXPERIMENT, gene_symbol = GENE_SYMBOL, log2fc = log2FoldChange,
+        pvalue, padj)
+
+expression_long <- expression_long %>% mutate(TIME = as.numeric(sub(".* (\\d+)hr.*", "\\1", sample_id)),
+                            DOSE = as.numeric(sub(".* (\\d+(\\.\\d+)?)uM.*", "\\1", sample_id)),
+                            REPLICATE = sub(".*_R(\\d+)$", "\\1", sample_id))
+
+write_rds(x = expression_long, file = file.path(output_path, paste0(study_NR, "_expression_long.rds")))
+write.csv(x = expression_long, file=file.path(output_path, paste0(study_NR, "_expression_long.csv")), row.names=F)
+
+# expression_wide
+expression_wide <- expression_long %>%
+    tidyr::pivot_wider(names_from = sample_id, names_glue = "{sample_id}__{.value}",
+        values_from = c(log2fc, pvalue, padj))
+
+write_rds(x = expression_wide, file = file.path(output_path, paste0(study_NR, "_expression_wide.rds")))
+
+
+# add columns needed for TXG-MAPr
+#expression_long_TXG <- expression_long %>%
+ #                                  dplyr::mutate("experiment" = "sample_id", "time" = "TIME", "conc" = "DOSE","gene_id" = "gene_symbol"),
+                                 
+
+write.csv(x=expression_long_TXG, file=file.path(output_path, paste0(study_NR, "_expression_long_TXG.csv")), row.names=F)
+
+```
+
+```{r}
+upload_vitro <- EUT046_expression_long_replicates_separate %>%
+  mutate(
+    time = as.numeric(sub(".* (\\d+)hr.*", "\\1", sample_id)),
+    conc = as.numeric(sub(".* (\\d+(\\.\\d+)?)uM.*", "\\1", sample_id))
+  ) %>%
+  rename(experiment = sample_id, gene_id = gene_symbol)
+
+Orthology <- read.delim(paste0(input_ort,"/RGD_ORTHOLOGS_NCBI.txt"))[c(1,4)] %>% 
+  dplyr::filter(HUMAN_ORTHOLOG_SYMBOL %in% upload_vitro$gene_id) %>% unique() 
+
+upload_vitro = upload_vitro %>%dplyr::filter(gene_id %in% Orthology$HUMAN_ORTHOLOG_SYMBOL)
+
+Orthology <- Orthology %>% rename(gene_id = HUMAN_ORTHOLOG_SYMBOL)
+
+upload_vitro = merge(upload_vitro, Orthology, by = "gene_id")
+
+upload_vitro = upload_vitro %>% select(-gene_id) %>%
+  rename(gene_id = RAT_GENE_SYMBOL)
+  
+  upload_vitro <- upload_vitro %>%
+  mutate(experiment = case_when(
+    grepl("R1", experiment) ~ "R1",
+    grepl("R2", experiment) ~ "R2",
+    grepl("R3", experiment) ~ "R3"
+  ))
+
+
+
+write.table(upload_vitro, paste0(output_path,"/upload_vitro.txt"), sep = "\t", row.names = F)                               
+```
+
+
+
+

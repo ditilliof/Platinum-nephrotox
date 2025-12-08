@@ -1,0 +1,878 @@
+---
+title: "In vitro qAOP plotting & QIVIVE"
+author: "Filippo Di Tillio"
+date: "2024-07-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Load packages, define folders and relevant timestamp to retrieve posterior simulation results.
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, readr, deSolve, conflicted,cmdstanr,posterior,loo,scales, readxl)
+
+conflict_prefer("filter","dplyr")
+conflict_prefer("sd","stats")
+
+Stan_vitro = "../Stanresults/invitroqAOP"
+Stan_vivo = "../Stanresults/invivoqAOP"
+Stan_PK = "../Stanresults/PK3"
+data_vitro = "../data/in vitro"
+data_vivo = "../data/in vivo"
+timestamp_PK = "2024-07-22_15-15-34"
+timestamp_vitro = "2024-08-05_11-21-18"
+timestamp_vivo = "2024-08-07_10-34-00"
+method = "EGs"
+source("./ODEs.R")
+
+# Define output directory for saving results
+output_dir <- "../Plots&output/QIVIVE"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+```
+
+#Retrieve calibration results for in vitro qAOP.
+```{r}
+sumParvitro <- read.csv(paste0(Stan_vitro, "/",timestamp_vitro,"/sumPar_cisDDNEC",timestamp_vitro,".csv"))  %>% column_to_rownames(var = "X") %>% dplyr::slice(-1)
+
+draws_vitro <- read_csv(paste0(Stan_vitro,"/",timestamp_vitro,"/draws_cisDDNEC",timestamp_vitro,".csv")) %>% select(-1)
+```
+
+#Import in vitro data.
+```{r}
+ dls = c(1.0,2.5,5.0,10.0,20.0,30.0,50.0)
+
+
+ifelse(method == "EGs", 
+       CISQAOP_FDT_RPTECdata <- read.csv(paste0(data_vitro, "/invitro160.csv")) %>%
+         filter(DOSE %in% dls),
+       CISQAOP_FDT_RPTECdata <- read_csv(paste0(data_vitro, "/IGS_invitroqAOP_20240822.csv")) %>%
+         select(-1) %>%
+         filter(DOSE %in% dls, StateVar == "DD")%>% group_by(StateVar, TIME, DOSE) %>%
+         summarize(mean = mean(Score, na.rm = TRUE), sd = sd(Score, na.rm = TRUE)) %>%
+         ungroup()
+)
+
+Necro_AOP = read_csv(paste0(data_vitro,"/NecroAOPnocc_fulltime.csv")) %>% select(-1) %>%
+  filter(DOSE %in% dls)
+
+CISQAOP_FDTform_stan = bind_rows(CISQAOP_FDT_RPTECdata,Necro_AOP)
+
+```
+
+
+#Retrieve calibration results for in vivo qAOP.
+```{r}
+sumParcis <- read_csv(paste0(Stan_vivo, "/",timestamp_vivo,
+                             "/sumPar_cisvivo",timestamp_vivo,".csv"))  %>%
+  column_to_rownames(var = "...1") %>% dplyr::slice(-1)
+draws_cis <- read_csv(paste0(Stan_vivo, "/",timestamp_vivo,
+                             "/draws_cisvivo",timestamp_vivo,".csv")) %>% select(-1)
+if(method == "IGS"){
+#Load data IGS
+CISQAOP_FDT_vivo <- read_csv(paste0(data_vivo,"/CISQAOP_FDT_2024_invivodata.csv")) %>%
+  select(-1)  %>%
+  filter(!(StateVar == "SECINF" & TIMEPOINT %in% c(672))) %>%
+  mutate(sds = ifelse(sds == 0, sds + 0.05, sds), StateVar = ifelse(StateVar == "SECINF", "INF", StateVar)) 
+} else if(method == "EGs"){
+#Load data EGs
+CISQAOP_FDT_vivo <- read_csv(paste0(data_vivo,"/CISQAOP_FDT_2024_invivodata_EGs.csv")) %>%
+  select(-1) 
+}
+
+PK_pars = read.csv(paste0(Stan_PK,"/",timestamp_PK,"/fit_pk_summary.csv")) %>% select(-1) %>%
+  column_to_rownames(var = "variable")
+
+loo = readRDS(paste0(Stan_vivo,"/",timestamp_vivo, "/loo_result",timestamp_vivo,".rds"))
+
+plot(loo, diagnostic = "k", label_points = FALSE)
+pareto_k_table(loo)
+length(pareto_k_values(loo))
+loo$estimates
+```
+
+
+
+#If the fit converges, copy timestamp folder in output folder
+```{r}
+source_dir <- paste0(Stan_vitro, "/", timestamp_vitro)
+target_dir <- paste0("../Plots&output/in vitro/", method)
+
+# Create the target directory if it doesn't exist
+if (!dir.exists(target_dir)) {
+  dir.create(target_dir, recursive = TRUE)
+}
+
+# Function to copy the folder and its contents
+copy_folder <- function(from, to) {
+  if (!dir.exists(to)) {
+    dir.create(to, recursive = TRUE)
+  }
+  files <- list.files(from, full.names = TRUE)
+  file.copy(files, to, recursive = TRUE)
+}
+
+# Copy the source directory to the target directory
+target_subdir <- file.path(target_dir, basename(source_dir))
+copy_folder(source_dir, target_subdir)
+```
+
+#Define kinetic parameters for in vitro qAOP
+```{r}
+Fina_value = 6.2 * 3600     #flow rate cisplatin from apical medium into cell in um3/h
+Finb_value = 0.64 * 3600    #flow rate cisplatin from basolateral medium into cell in um3/h
+Fmin_value = 0.04 * 3600    #flow rate metabolite into cell in um3/h
+Qcell0 = 0
+Qinter0 = 0
+
+```
+
+
+
+#Save posterior trace and density plots for in vitro qAOP model fitting.
+```{r}
+# Load the fit object from the RDS file
+fit <- readRDS(paste0(Stan_vitro, "/", timestamp_vitro, "/fitvitro.rds"))
+
+# Extract draws and convert to data frame with iteration and chain
+draws_df <- fit$draws(format = "df", variables = c("k_cDD", "degDD", "hillDD", "k_inter", "maxdeath", "k_hillnec", "p", "h")) %>%
+  mutate(.iteration = rep(1:(nrow(.) / max(.chain)), times = max(.chain)),
+         .chain = rep(1:max(.chain), each = nrow(.) / max(.chain)))
+
+# Custom labels using expressions for ggplot2
+custom_labels <- c(
+  k_cDD = "k[cDD]",
+  degDD = "d[DD]",
+  hillDD = "k[hillDD]",
+  k_inter = "k[inter]",
+  maxdeath = "maxdeath",
+  k_hillnec = "k[hillNEC]",
+  p = "p",
+  h = "h"
+)
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 18),  # Larger axis titles
+    strip.text = element_text(size = 18),  # Larger facet labels
+    legend.title = element_text(size = 18), # Larger legend title
+    legend.text = element_text(size = 18),  # Larger legend text
+    axis.text = element_text(size = 14),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0),  # Increase margin around legend
+    panel.spacing = unit(1.5, "lines"),  # Increase space between facets to prevent overlap
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels to prevent overlap
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, ncol = 4, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+# Create density plot
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 3)
+    if (length(breaks) < 3) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  base_theme
+
+# Save the plots as TIFF files
+tiff(paste0(target_subdir, "/", "Trace-plot_vitro", ".tiff"), units = "in", width = 9, height = 6, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(target_subdir, "/", "Density-plot_vitro", ".tiff"), units = "in", width = 9, height = 9, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+
+```
+
+#Generate and save time plots for in vitro qAOP.
+```{r}
+# Function to generate and save plots
+generate_plots <- function(state_vars, KE_full_names, dose, target_subdir, draws_vitro, Fina_value, Finb_value, Qcell0, Qinter0, y_max_values, finish) {
+  
+  Qapi0 <- dose * 301.1 * 1e-15 * 1e12
+  Qbas0 <- dose * 301.1 * 1e-15 * 2e12
+  
+  for (i in seq_along(state_vars)) {
+    KE <- state_vars[i]
+    KE_full <- KE_full_names[i]
+    y_max <- y_max_values[[KE]]
+    
+    data <- CISQAOP_FDTform_stan %>% filter(StateVar == KE, DOSE == dose)
+    
+    tiff(filename = file.path(target_subdir, paste0(KE, "_", dose, "uM_cisplatin.tiff")), 
+         units = "in", width = 9, height = 6, res = 700, compression = 'lzw')
+    
+    par(mar = c(5, 6, 4, 2) + 0.1)
+    
+    plot(x = data$TIME, y = data$mean, type = "p", pch = 19, ylab = paste0(KE, " (a.u.)"), #(μg)
+         xlab = "Time (h)", xlim = c(0, max(finish)), ylim = c(0, y_max), 
+         main = paste0(KE_full, ", ", dose, "uM cisplatin"), 
+         cex.lab = 3, cex.axis = 2, cex.main = 1.5)
+    
+    arrows(data$TIME, data$mean - data$sd, data$TIME, data$mean + data$sd, length = 0, 
+           angle = 90, code = 3, lty = 1, lwd = 1.2)
+    
+    simulation_results <- matrix(ncol = length(finish), nrow = 250)
+    
+    for (j in 1:250) {
+      k <- sample(1:nrow(draws_vitro), 1)
+      
+      pars <- c(
+        Vapi = 1e12,
+        Vbas = 2e12,
+        Vcell = 2005,
+        Ncell = 2e6,
+        Fina = Fina_value,
+        Fouta = Fina_value / 1.8,
+        Finb = Finb_value,
+        Foutb = Finb_value / 51,
+        Kmet = 8.4 * 3600,
+        k_cDD = draws_vitro[[k, "k_cDD"]],
+        degDD = draws_vitro[[k, "degDD"]],
+        hillDD = draws_vitro[[k, "hillDD"]],
+        k_inter = draws_vitro[[k, "k_inter"]],
+        maxdeath = draws_vitro[[k, "maxdeath"]],
+        k_hillnec = draws_vitro[[k, "k_hillnec"]],
+        p = draws_vitro[[k, "p"]],
+        h = draws_vitro[[k, "h"]]
+      )
+      
+      inistate <- c(Qapi = Qapi0, Qbas = Qbas0, Qcell = Qcell0, Qinter = Qinter0, DD = 0, NEC = 0)
+      out <- ode(y = inistate, times = finish, func = Model7, parms = pars)
+      
+      if (KE %in% c("Qinter", "DD", "NEC")) {
+        lines(data.frame(out) %>% select(time, all_of(KE)), col = alpha("blue", 0.1), lty = 1)
+        simulation_output <- as.data.frame(out)
+        simulation_results[j, ] <- simulation_output[[KE]]
+      } else {
+        simulation_output <- as.data.frame(out)
+        simulation_results[j, ] <- simulation_output[[KE]]
+      }
+    }
+    
+    if (KE %in% c("Qinter", "DD", "NEC")) {
+      mean_results <- apply(simulation_results, 2, mean)
+      lines(finish, mean_results, type = "l", col = "red", lwd = 2)
+    }
+    
+    dev.off()
+  }
+}
+
+# Define the finish vector
+t_end <- 80
+finish <- seq(0, t_end, by = 0.1)
+
+# Calculate y_max values for the highest dose
+highest_dose <- 75
+state_vars <- c("DD", "NEC", "Qapi", "Qbas", "Qcell", "Qinter")
+y_max_values <- list()
+
+for (KE in state_vars) {
+  pars <- c(
+    Vapi = 1e12,
+    Vbas = 2e12,
+    Vcell = 2005,
+    Ncell = 2e6,
+    Fina = Fina_value,
+    Fouta = Fina_value / 1.8,
+    Finb = Finb_value,
+    Foutb = Finb_value / 51,
+    Kmet = 8.4 * 3600,
+    k_cDD = draws_vitro[[1, "k_cDD"]],
+    degDD = draws_vitro[[1, "degDD"]],
+    hillDD = draws_vitro[[1, "hillDD"]],
+    k_inter = draws_vitro[[1, "k_inter"]],
+    maxdeath = draws_vitro[[1, "maxdeath"]],
+    k_hillnec = draws_vitro[[1, "k_hillnec"]],
+    p = draws_vitro[[1, "p"]],
+    h = draws_vitro[[1, "h"]]
+  )
+  
+  Qapi0 <- highest_dose * 301.1 * 1e-15 * 1e12
+  Qbas0 <- highest_dose * 301.1 * 1e-15 * 2e12
+  inistate <- c(Qapi = Qapi0, Qbas = Qbas0, Qcell = Qcell0, Qinter = Qinter0, DD = 0, NEC = 0)
+  
+  out <- ode(y = inistate, times = finish, func = Model7, parms = pars)
+  
+  if (KE == "NEC") {
+    y_max_values[[KE]] <- 1
+  } else if (KE == "DD") {
+    y_max_values[[KE]] <- 5
+  } else if (KE == "Qinter") {
+    y_max_values[[KE]] <- max(data.frame(out)[[KE]]) * 1.5  # Increase buffer to 50% for Qinter
+  } else {
+    y_max_values[[KE]] <- max(data.frame(out)[[KE]]) * 1.1  # Adding 10% buffer to the max value
+  }
+}
+
+# Generate plots for each dose level of interest and state variable
+for (DL in 3:9) {
+  dose <- case_when(
+    DL == 1 ~ 0.1, DL == 2 ~ 0.5, DL == 3 ~ 1, DL == 4 ~ 2.5,
+    DL == 5 ~ 5, DL == 6 ~ 10, DL == 7 ~ 20, DL == 8 ~ 30, DL == 9 ~ 50,
+    DL == 10 ~ 75
+  )
+  
+  KE_full_names <- c("DNA Damage", "Necrosis", "Qapi", "Qbas", "Qcell", "Qinter")
+  
+  generate_plots(state_vars, KE_full_names, dose, target_subdir, draws_vitro, Fina_value, Finb_value, Qcell0, Qinter0, y_max_values, finish)
+}
+
+generate_plots(state_vars, KE_full_names, 75, target_subdir, draws_vitro, Fina_value, Finb_value, Qcell0, Qinter0, y_max_values, finish)
+```
+
+#Compare in vitro PK simulation results in vitro with in vivo kinetic data.
+```{r}
+DL = 10
+dose = case_when(
+  DL == 1 ~ 0.1,  DL == 2 ~ 0.5, DL == 3 ~ 1,  DL == 4 ~ 2.5, DL == 5 ~ 5,  DL == 6 ~ 10,
+  DL == 7 ~ 20,  DL == 8 ~ 30, DL == 9 ~ 50, DL == 10 ~ 75)
+finish_vivo = seq(0,700,by = 0.1)
+finish_vitro = seq(0,80,by = 0.1)
+
+scale = PK_pars[["scale", "mean"]]
+
+inistate_vivo <- c(Plasma = PK_pars[["Plasma0", "mean"]], KidneyPt = 0, AccuPt = 0)
+
+Qapi0 <- dose * 301.1 * 1e-15 * 1e12
+Qbas0 <- dose * 301.1 * 1e-15 * 2e12
+
+inistate_vitro <- c(Qapi = Qapi0, Qbas = Qbas0, Qcell = 0)
+
+pars_vivo = c(k_PlasKid = PK_pars[["k_PlasKid", "mean"]],
+          k_ePlas = PK_pars[["k_ePlas", "mean"]],
+          k_KidPlas = PK_pars[["k_KidPlas", "mean"]],
+          k_eKid = PK_pars[["k_eKid", "mean"]],
+          k_KidAccu = PK_pars[["k_KidAccu", "mean"]],
+          k_AccuKid = PK_pars[["k_AccuKid", "mean"]])
+
+Fina_value = 6.2 * 3600     #flow rate cisplatin from apical medium into cell in um3/h
+Finb_value = 0.64 * 3600    #flow rate cisplatin from basolateral medium into cell in um3/h
+Fmin_value = 0.04 * 3600    #flow rate metabolite into cell in um3/h
+pars_vitro <- c(Vapi = 1e12,
+        Vbas = 2e12,
+        Vcell = 2005,
+        Ncell = 2e6,
+        Fina = Fina_value,
+        Fouta = Fina_value / 1.8,
+        Finb = Finb_value,
+        Foutb = Finb_value / 51,
+        Kmet = 8.4 * 3600)
+
+out_vivo <- as.data.frame(ode(y = inistate_vivo, times = finish_vivo, func = VivoPK3, parms = pars_vivo)) %>%
+  mutate(Kidney_tot = scale*(KidneyPt + AccuPt))
+out_vitro <- as.data.frame(ode(y = inistate_vitro, times = finish_vitro, func = VitroPK, parms = pars_vitro))
+
+ggplot(data = out_vivo) +  theme_classic() +
+  geom_line(aes(x = time, y = Kidney_tot))
+
+ggplot(data = out_vitro) +  theme_classic() +
+  geom_line(aes(x = time, y = Qcell))
+
+
+max(out_vivo$Kidney_tot)
+
+protein = 0.00096 # ug protein/cell 1.92mg/well, 2*10^6 cells/well
+
+Q_cell_pronorm = data.frame(time = out_vitro$time, Q_cell_norm = out_vitro$Qcell/(protein))
+
+max(Q_cell_pronorm$Q_cell_norm)
+
+rel = 2.5
+# Save the last ggplot as a TIFF file with a resolution of 700 dpi
+tiff(paste0(output_dir, '/Q_cell_pronorm_plot.tiff'), width = 9, height = 7, units = "in", res = 700)
+ggplot(data = Q_cell_pronorm) + 
+  theme_classic() + 
+  geom_line(aes(x = time, y = Q_cell_norm), size = 1.5) + ylim(0,200) +
+  labs(y = expression(Q[cell]~(mu*g/protein)), x = "Time (h)") + 
+  theme(
+    axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+    axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+    axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+    axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+  )
+dev.off() # Close the TIFF device
+
+```
+
+
+#Import in vivo PK data.
+```{r}
+full_S <- read.csv(paste0(data_vivo, "/full_S.csv")) %>% select(-1) %>% mutate(StateVar="S") %>% dplyr::filter(Time!=0)
+
+full_Accu <- read.csv(paste0(data_vivo,"/full_Accu.csv"))
+
+tiff(paste0(output_dir,'/Pt_kidney_plot.tiff'), width = 9, height = 7, units = "in", res = 700)
+ggplot(full_Accu %>%dplyr::filter(Time<50), aes(x = Time, y = Score)) + theme_classic() +
+    geom_line(size = 1.5) + ylim(0,200) +
+    labs(x="Time (h)", y= expression(Total~Pt~'in'~Kidney~(mu*g/protein))) +
+    geom_errorbar(aes(x = Time, ymin = Score - SD, ymax = Score + SD), size = 1.5)  +
+  theme(
+    axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+    axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+    axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+    axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+  )
+dev.off()
+
+```
+
+#Define and import material for qAOP based-QIVIVE.
+```{r}
+num_sim = 250
+finish_vivo = seq(0,800,by=5)
+finish_vitro = seq(0,80,by=1)
+protein = 0.00096
+doses_vivo = seq(0, 10, by=0.1) #51st element is 5 (mg/kg)
+conc_vitro = seq(0, 90, by=0.5)
+draws_PK = read_csv(paste0(Stan_PK, "/", timestamp_PK, "/draws_pk.csv")) %>%
+  select(-`...1`)
+rel = 2.5
+
+#The cmdstanr output divided the output of the posteriors in different columns
+#for each chain, we first make sure the output for each parameter stays in the same column
+
+draws_PK_clean <- draws_PK %>%
+  select(matches("^X\\d+\\."))  # Select only X1., X2., etc.
+
+
+draws_PK_long <- draws_PK_clean %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = c("chain", "parameter"),
+    names_pattern = "X(\\d+)\\.(.+)",
+    values_to = "value"
+  )
+
+
+draws_PK <- draws_PK_long %>%
+  arrange(chain) %>%
+  group_by(parameter) %>%
+  mutate(row_id = row_number()) %>%
+  pivot_wider(
+    names_from = parameter,
+    values_from = value
+  ) %>%
+  ungroup() %>%
+  select(-row_id)
+
+```
+
+#Compute maximal values over time of KF and CD as function of the in vivo dose vector.
+```{r}
+
+KFCD_max <- sapply(doses_vivo, function(dose) {
+  factor_vivo <- dose / 5
+  
+  simulation_results_KF <- matrix(ncol = length(finish_vivo), nrow = num_sim)
+  simulation_results_CD <- matrix(ncol = length(finish_vivo), nrow = num_sim)
+
+  for(i in 1:num_sim){
+    k = sample(1:nrow(draws_cis),1)
+  
+    modelParams <- setModelParameters_vivo("Cisplatinvivo", draws_cis, k)
+  
+    pars <- modelParams$pars
+    
+    inistate_vivo <- c(Dose = PK_pars[["Plasma0", "mean"]] * factor_vivo, KidneyPt = 0, AccuPt =
+                         0, DD = 0, CD = 0, INF = draws_cis[[k,"INF0"]], KF = 0, p = 10)
+    out = ode(y=inistate_vivo, times=finish_vivo, func=get("Cisplatinvivo"), parms=pars)
+  
+    simulation_output <- as.data.frame(out)
+    simulation_results_KF[i, ] <- simulation_output[["KF"]]
+    simulation_results_CD[i, ] <- simulation_output[["CD"]]
+  }
+
+mean_results_KF <- apply(simulation_results_KF, 2, mean)
+mean_results_CD <- apply(simulation_results_CD, 2, mean)
+return(c(KF_max = max(mean_results_KF), CD_max = max(mean_results_CD)))
+})
+
+```
+
+#Compute maximal values over time of NEC as function of the in vitro concentration vector.
+```{r}
+NEC_max <- sapply(conc_vitro, function(dose) {
+  inistate_vitro <- c(Qapi = dose * 301.1 * 1e-15 * 1e12, Qbas = dose * 301.1 * 1e-15 * 2e12, Qcell = 0, Qinter = 0, DD = 0, NEC = 0)
+  simulation_results <- matrix(ncol = length(finish_vitro), nrow = num_sim)
+   for(i in 1:num_sim){
+    k = sample(1:nrow(draws_vitro),1)
+    
+    pars_vitro = c(
+      Vapi = 1e12,
+      Vbas = 2e12,
+      Vcell = 2005,
+      Ncell = 2e6,
+      Fina = Fina_value,     #flow rate cisplatin from apical medium into cell in um3/h
+      Fouta = Fina_value/1.8,#flow rate cisplatin out of cell into apical medium in um3/h
+      Finb = Finb_value,     #flow rate cisplatin from basolateral medium into cell in um3/h
+      Foutb = Finb_value/51, #flow rate cisplatin out of cell into basolateral medium in um3/h
+      Kmet = 8.4 * 3600,      #maximum cisplatin metabolite formation rate in um3/h
+      k_cDD = draws_vitro[[k,"k_cDD"]],
+      degDD = draws_vitro[[k,"degDD"]],
+      hillDD = draws_vitro[[k,"hillDD"]],
+      k_inter = draws_vitro[[k,"k_inter"]],
+      maxdeath = draws_vitro[[k,"maxdeath"]],
+      k_hillnec = draws_vitro[[k,"k_hillnec"]],
+      p = draws_vitro[[k,"p"]],
+      h = draws_vitro[[k,"h"]])
+    
+    out_vitro <- as.data.frame(ode(y = inistate_vitro, times = finish_vitro, func = Model7, parms = pars_vitro))
+    simulation_output <- as.data.frame(out_vitro)
+    simulation_results[i, ] <- simulation_output[["NEC"]]
+    }
+mean_results <- apply(simulation_results, 2, mean)
+return(max(mean_results))
+})
+
+```
+
+#Derive "Total Kidney" platinum concentration vector from in vivo PK3 model. 
+```{r}
+
+totkid_max = sapply(doses_vivo, function(dose){
+  factor_vivo <- dose / 5
+  
+  simulation_results_totkid <- matrix(ncol = length(finish_vivo), nrow = num_sim)
+  
+   for(i in 1:num_sim){
+    k = sample(1:nrow(draws_PK),1)
+  
+    modelParams <- setModelParameters_PK3("VivoPK3", draws_PK, k)
+  
+    pars <- modelParams$pars
+    
+    inistate <- c(Plasma = draws_PK[[k,"Plasma0"]]*factor_vivo, KidneyPt = 0, AccuPt = 0)
+    
+    out = ode(y=inistate, times=finish_vivo, func=VivoPK3, parms=pars)
+  
+    simulation_output <- as.data.frame(out)
+    simulation_results_totkid[i, ] <- draws_PK[[k,"scale"]]*
+      (simulation_output[["KidneyPt"]]+simulation_output[["AccuPt"]])
+  }
+
+mean_results_totkid <- apply(simulation_results_totkid, 2, mean)
+return(max(mean_results_totkid))
+})
+
+```
+
+#Convert vector defined in the previous chunk in uM.
+```{r}
+
+P = 8.103e-2 #protein content in kidney tissue, gprotein/gtissue
+M = 300.05 #molecular weight of cisplatin, ug/umol
+rho = 1000 #density of kidney tissue, gtissue/L
+ugprot_to_uM = P*rho/M
+totkid_maxuM = totkid_max * ugprot_to_uM
+
+```
+
+#Define AO response data frames (both in vitro and in vivo), use in vivo concentration
+#vector computed in the previous chunk. Plot AO responses as function of the concentrations.
+```{r}
+
+vivo_AO_RR = data.frame(doses = doses_vivo, conc = totkid_maxuM, KF = KFCD_max["KF_max",], CD = KFCD_max["CD_max",])
+vitro_AO_RR = data.frame(conc = conc_vitro, NEC = NEC_max)
+
+tiff(paste0(output_dir,'/vivo_AO_RR.tiff'), width = 9, height = 7, units = "in", res = 700)
+ggplot(vivo_AO_RR, aes(x = doses, y = KF)) + theme_classic() +
+    geom_line(size = 1.5) +
+    labs(x="Doses (mg/kg)", y = "KF (a.u)") +
+  theme(
+    axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+    axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+    axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+    axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+  )
+dev.off()
+
+vivo_AO_RR_long <- pivot_longer(vivo_AO_RR, cols = c("KF", "CD"),
+                                names_to = "KE_type", values_to = "KE")
+
+# Create the combined plot
+tiff(paste0(output_dir,'/vivo_AO_RR_full.tiff'), 
+     width = 9, height = 7, units = "in", res = 700)
+ggplot(vivo_AO_RR_long, aes(x = doses, y = KE, color = KE_type)) +
+  theme_classic() +
+  geom_line(size = 1.5) +
+  labs(x = "Doses (mg/kg)", y = "KE (a.u.)", color = "KE") +
+  theme(
+    axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+    axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+    axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+    axis.text.y = element_text(size = rel(rel)),  # Increase y-axis tick label size
+    legend.title = element_text(size = 17),
+    legend.text = element_text(size = 15)
+  )
+dev.off()
+
+# plot in vivo KF and CD against estimated kidney concentration 
+tiff(paste0(output_dir,'/vivo_AO_RR_full_uM.tiff'), 
+     width = 9, height = 7, units = "in", res = 700)
+ggplot(vivo_AO_RR_long, aes(x = conc, y = KE, color = KE_type)) +
+  theme_classic() +
+  geom_line(size = 1.5) +
+  labs(x = expression("Maximal Concentration in Kidney"~(mu*M)), y = "KE (a.u.)", color = "KE") +
+  theme(
+    axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+    axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+    axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+    axis.text.y = element_text(size = rel(rel)),  # Increase y-axis tick label size
+    legend.title = element_text(size = 17),
+    legend.text = element_text(size = 15)
+  )
+dev.off()
+
+tiff(paste0(output_dir,'/vitro_AO_RR.tiff'), width = 9, height = 7, units = "in", res = 700)
+
+ggplot(vitro_AO_RR, aes(x = conc, y = NEC)) + 
+    theme_classic() +
+    geom_line(size = 1.5) +
+    labs(x = expression(Concentration~(mu*M)), 
+         y = "NEC (a.u)") +
+    theme(
+        axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+        axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+        axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+        axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+    )
+
+dev.off()
+
+#concentration giving 10% of maximal KF response
+print(paste0("concentration giving 10% of maximal KF response: ", 
+             round(vivo_AO_RR$conc[which.min(abs(vivo_AO_RR$KF - 0.1 * max(vivo_AO_RR$KF)))])))
+
+# concentration giving 90% of maximal KF response
+print(paste0("concentration giving 90% of maximal KF response: ",
+             round(vivo_AO_RR$conc[which.min(abs(vivo_AO_RR$KF - 0.9 * max(vivo_AO_RR$KF)))])))
+
+# concentration giving 10% of maximal NEC response
+print(paste0("concentration giving 10% of maximal NEC response: ",
+             round(vitro_AO_RR$conc[which.min(abs(vitro_AO_RR$NEC - 0.1 * max(vitro_AO_RR$NEC)))])))
+
+# concentration giving 90% of maximal NEC response
+print(paste0("concentration giving 90% of maximal NEC response: ",
+             round(vitro_AO_RR$conc[which.min(abs(vitro_AO_RR$NEC - 0.9 * max(vitro_AO_RR$NEC)))])))
+
+
+```
+
+
+#Code for DNA Damage - based QIVIVE (supplementary).
+```{r}
+DDvivo_max <- sapply(doses_vivo, function(dose) {
+  factor_vivo <- dose / 5
+  
+  simulation_results_DD <- matrix(ncol = length(finish_vivo), nrow = num_sim)
+
+  for(i in 1:num_sim){
+    k = sample(1:nrow(draws_cis),1)
+  
+    modelParams <- setModelParameters("Cisplatinvivo", draws_cis, k)
+  
+    pars <- modelParams$pars
+    
+    inistate_vivo <- c(Plasma = PK_pars[["Plasma0", "mean"]] * factor_vivo, KidneyPt = 0, AccuPt =
+                         0, DD = 0, CD = 0, INF = draws_cis[[k,"INF0"]], KF = 0, p = 10)
+    out = ode(y=inistate_vivo, times=finish_vivo, func=get("Cisplatinvivo"), parms=pars)
+  
+    simulation_output <- as.data.frame(out)
+    simulation_results_DD[i, ] <- simulation_output[["DD"]]
+  }
+
+mean_results_DD <- apply(simulation_results_DD, 2, mean)
+return(max(mean_results_DD))
+})
+
+DDvitro_max <- sapply(conc_vitro, function(dose) {
+  inistate_vitro <- c(Qapi = dose * 301.1 * 1e-15 * 1e12, Qbas = dose * 301.1 * 1e-15 * 2e12, Qcell = 0, Qinter = 0, DD = 0, NEC = 0)
+  simulation_results <- matrix(ncol = length(finish_vitro), nrow = num_sim)
+   for(i in 1:num_sim){
+    k = sample(1:nrow(draws_vitro),1)
+    
+    pars_vitro = c(
+      Vapi = 1e12,
+      Vbas = 2e12,
+      Vcell = 2005,
+      Ncell = 2e6,
+      Fina = Fina_value,     #flow rate cisplatin from apical medium into cell in um3/h
+      Fouta = Fina_value/1.8,#flow rate cisplatin out of cell into apical medium in um3/h
+      Finb = Finb_value,     #flow rate cisplatin from basolateral medium into cell in um3/h
+      Foutb = Finb_value/51, #flow rate cisplatin out of cell into basolateral medium in um3/h
+      Kmet = 8.4 * 3600,      #maximum cisplatin metabolite formation rate in um3/h
+      k_cDD = draws_vitro[[k,"k_cDD"]],
+      degDD = draws_vitro[[k,"degDD"]],
+      hillDD = draws_vitro[[k,"hillDD"]],
+      k_inter = draws_vitro[[k,"k_inter"]],
+      maxdeath = draws_vitro[[k,"maxdeath"]],
+      k_hillnec = draws_vitro[[k,"k_hillnec"]],
+      p = draws_vitro[[k,"p"]],
+      h = draws_vitro[[k,"h"]])
+    
+    out_vitro <- as.data.frame(ode(y = inistate_vitro, times = finish_vitro, func = get(model_vitro), parms = pars_vitro))
+    simulation_output <- as.data.frame(out_vitro)
+    simulation_results[i, ] <- simulation_output[["DD"]]
+    }
+mean_results <- apply(simulation_results, 2, mean)
+return(max(mean_results))
+})
+
+vitro_DD_RR = data.frame(doses = conc_vitro, DD = DDvitro_max)
+vivo_DD_RR = data.frame(doses = doses_vivo, DD = DDvivo_max)
+
+tiff(paste0(output_dir,'/vitro_DD_RR.tiff'), width = 9, height = 7, units = "in", res = 700)
+
+ggplot(vitro_DD_RR, aes(x = doses, y = DD)) + 
+    theme_classic() +
+    geom_line(size = 1.5) +
+    labs(x = expression(Concentration~(mu*M)), 
+         y = "DD (a.u)") +
+    theme(
+        axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+        axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+        axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+        axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+    )
+
+dev.off()
+
+tiff(paste0(output_dir,'/vivo_DD_RR.tiff'), width = 9, height = 7, units = "in", res = 700)
+
+ggplot(vivo_DD_RR, aes(x = doses, y = DD)) + 
+    theme_classic() +
+    geom_line(size = 1.5) +
+    labs(x = "Doses (mg/kg)", 
+         y = "DD (a.u)") +
+    theme(
+        axis.title.x = element_text(size = rel(rel)), # Increase x-axis label size
+        axis.title.y = element_text(size = rel(rel)), # Increase y-axis label size
+        axis.text.x = element_text(size = rel(rel)),  # Increase x-axis tick label size
+        axis.text.y = element_text(size = rel(rel))   # Increase y-axis tick label size
+    )
+
+dev.off()
+
+```
+
+#Plot Platinum concentration (uM) from dose-response in vivo data.
+```{r}
+Plasma_ic = read_xlsx(paste0(data_vivo,"/Plateinum_measurement_1stStudy.xlsx")) %>%
+  select(-c(4,5,6)) %>% mutate(PT_conc = `Pt content (ugram/g protein)` * ugprot_to_uM)
+
+# Summarize the data to calculate mean and standard deviation
+Plasma_ic_summary <- Plasma_ic %>%
+  group_by(Dose) %>%
+  summarise(mean = mean(PT_conc),
+            sd = sd(PT_conc))
+
+tiff(paste0(output_dir,'/Ptperdose_linear.tiff'), 
+     width = 9, height = 7, units = "in", res = 700)
+
+# Create the plot with a linear x-axis
+ggplot() +
+  # Plot individual data points
+  geom_point(data = Plasma_ic, aes(x = Dose, y = PT_conc), 
+             size = 3, alpha = 0.6) +
+  # Plot mean values connected by a line
+  geom_line(data = Plasma_ic_summary, aes(x = Dose, y = mean), 
+            color = "#1f77b4", size = 1) +
+  # Add error bars (mean ± standard deviation)
+  geom_errorbar(data = Plasma_ic_summary, aes(x = Dose, ymin = mean - sd, ymax = mean + sd), 
+                width = 0.2, color = "black") +
+  # Add mean points
+  geom_point(data = Plasma_ic_summary, aes(x = Dose, y = mean), 
+             color = "red", size = 4) +
+  # Labels and theme
+  labs(x = "Dose (mg/kg)", y = expression("Platinum concentration ("*mu*"M)")) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = rel(2.25)),
+    axis.title.y = element_text(size = rel(2.25)),
+    axis.text.x = element_text(size = rel(2.5)),
+    axis.text.y = element_text(size = rel(2.5))
+  )
+
+# Close the TIFF file
+dev.off()
+
+```
+
+
+#Save file for in vivo BMD analysis.
+```{r}
+
+finish_vivo = seq(0,70,by=1)
+CD_67 <- sapply(doses_vivo, function(dose) {
+  factor_vivo <- dose / 5
+  
+  simulation_results_CD <- matrix(ncol = length(finish_vivo), nrow = num_sim)
+
+  for(i in 1:num_sim){
+    k <- sample(1:nrow(draws_cis), 1)
+    modelParams <- setModelParameters_vivo("Cisplatinvivo", draws_cis, k)
+    pars <- modelParams$pars
+    
+    inistate_vivo <- c(
+      Dose = PK_pars[["Plasma0", "mean"]] * factor_vivo,
+      KidneyPt = 0, AccuPt = 0, DD = 0, CD = 0,
+      INF = draws_cis[[k,"INF0"]], KF = 0, p = 10
+    )
+    
+    out <- ode(y = inistate_vivo, times = finish_vivo, func = get("Cisplatinvivo"), parms = pars)
+    simulation_output <- as.data.frame(out)
+    
+    simulation_results_CD[i, ] <- simulation_output[["CD"]]
+  }
+
+  mean_results_CD <- apply(simulation_results_CD, 2, mean)
+  
+  # Extract value at time = 67
+  idx_67 <- which.min(abs(finish_vivo - 67))
+  return(mean_results_CD[idx_67])
+})
+
+vivo_CD_67 = data.frame(doses = doses_vivo, conc = totkid_maxuM, CD = CD_67) %>%
+  filter(doses %in% c(0,1,2.5,5,7.5,10))
+
+write.table(vivo_CD_67, file.path(data_vivo, "vivo_CD_67.txt"),
+            sep = "\t", row.names = FALSE, col.names = TRUE,
+            fileEncoding = "UTF-8", quote = FALSE)
+
+```
+

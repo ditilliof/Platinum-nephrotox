@@ -1,0 +1,48 @@
+data/in vitro/EUT046_*
+data/in vitro/IGS_invitroqAOP_20240822.csv
+data/in vitro/invitro160.csv
+data/in vitro/Necro*
+data/in vivo/CISQAOP*
+data/in vivo/gs_eid.csv
+data/in vivo/Pear_rat.csv
+data/in vivo/upload*
+data/in vivo/vivo_CD_67.txt
+
+# TIFF plots (large)
+Plots&output/QIVIVE/Pt_kidney_plot.tiff
+Plots&output/QIVIVE/vivo_AO_RR_full.tiff
+Plots&output/Oxstress/OSRHUMANGENES50uM.tiff
+Plots&output/QIVIVE/vivo_DD_RR.tiff
+Plots&output/QIVIVE/Ptperdose_linear.tiff
+Plots&output/QIVIVE/vivo_AO_RR_full_uM.tiff
+Plots&output/QIVIVE/vitro_DD_RR.tiff
+Plots&output/QIVIVE/vivo_AO_RR.tiff
+Plots&output/QIVIVE/7mDR.tiff
+Plots&output/Oxstress/RKID160_vitro_dose_20uM.tiff
+Plots&output/Oxstress/OSRHUMANGENES.tiff
+Plots&output/Oxstress/RKID96mvitro.tiff
+Plots&output/Oxstress/RKID105vitro.tiff
+Plots&output/Oxstress/RKID160vitro.tiff
+
+# Large EG CSV outputs
+Plots&output/in vitro/EGs/2024-08-05_11-21-18/Model8-202408051121-1-8e036e.csv
+Plots&output/in vitro/EGs/2024-08-05_11-21-18/Model8-202408051121-2-8e036e.csv
+Plots&output/in vitro/EGs/2024-08-05_11-21-18/Model8-202408051121-3-8e036e.csv
+Plots&output/in vitro/EGs/2024-08-05_11-21-18/Model8-202408051121-4-8e036e.csv
+
+# Large RDS fit
+Plots&output/in vitro/EGs/2024-08-05_11-21-18/fitvitro.rds
+
+# Large TIFFs
+Plots&output/Oxstress/OSRHUMANGENES30uM.tiff
+
+# Huge data files
+data/in vitro/upload_vitro.txt
+data/in vivo/expression_wide_rat.rds
+data/in vivo/DEGsfiltered_vs_correctControl_clean_combinedControl_splitReplicate.txt
+data/in vivo/DEGsfiltered_vs_correctControl_clean_transformed_corrClean_ver6_normSplit_replicateSplit.txt
+
+.Rproj.user
+.Rhistory
+.RData
+Stanresults/invitroqAOP/2024-08-05_11-21-18/fitvitro.rds

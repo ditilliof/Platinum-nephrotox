@@ -1,0 +1,234 @@
+---
+title: "PKfit"
+author: "me"
+date: "2024-07-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+if (!require("pacman", quietly = T)) {
+    install.packages("pacman")
+}
+pacman::p_load(tidyverse, readr, deSolve, conflicted, scales)
+
+conflict_prefer("filter","dplyr")
+conflict_prefer("sd","stats")
+Stan_folder = "../Stanresults"
+data_vivo = "../data/in vivo"
+source("./ODEs.R")
+```
+
+```{r}
+#Retrieve posterior results & LOO diagnostic
+number = 3 #choose between 2 (PK2) and 3 (PK3)
+model = paste0("PK",number)
+output_dir = paste0("../Plots&output/", model)
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+timestamp = "2024-07-22_15-15-34" #this is the PK3
+#timestamp = "2024-11-20_10-00-53" #this is the PK2
+
+
+sumParPK <- read_csv(paste0(Stan_folder, "/", model, "/", timestamp, "/fit_pk_summary.csv"))  %>% column_to_rownames(var = "...1") %>% dplyr::slice(-1)
+
+
+draws_PK <- read_csv(paste0(Stan_folder, "/", model, "/", timestamp, "/draws_pk.csv")) %>% select(-1)
+
+
+# Load the data
+full_S <- read.csv(paste0(data_vivo,"/full_S.csv")) %>% select(-1) %>% mutate(StateVar="S") %>% filter(Time!=0)
+
+full_Accu <- read.csv(paste0(data_vivo,"/full_Accu.csv")) %>%
+  select(-1) %>%
+  mutate(StateVar="Accu")  
+
+full_PK <- rbind(full_S,full_Accu)
+
+```
+
+
+```{r}
+#choose dose level and KE
+  variable = "Accu" 
+if(model == "PK2"){
+  variable_name = case_when(variable == "S" ~ "Plasma", variable == "Accu" ~ "KidneyPt")
+} else if (model == "PK3"){
+  variable_name = case_when(variable == "S" ~ "Plasma", variable == "Accu" ~ "Total Kidney")
+}
+
+if(variable == "Accu"){
+  unit <- "\u00B5g/protein"
+  ymax = 210
+} else if (variable == "S"){
+  unit <- "\u00B5g"
+  ymax = 70
+}
+
+t_end = 36
+finish = seq(0,t_end,by = 0.1)
+
+data <- full_PK %>% filter(StateVar == variable)
+
+par(mar = c(5, 6, 4, 2) + 0.1)
+
+plot(x=data$Time,y=data$Score,type="p", pch=19, ylab=paste0(variable_name, " (", unit,")"), xlab="Time (h)",xlim=c(0,t_end),ylim=c(0,ymax), main = paste0("Pt accumulation in ", variable_name, " (5mg/kg cisplatin)"), cex.lab = 2, cex.axis = 2, cex.main = 1.5)
+
+arrows(data$Time, data$Score- data$SD, data$Time, data$Score+data$SD, length=0, angle=90, code=3, lty=1, lwd=1.2)
+# legend(x = "topleft",          # Position
+#        legend = c("Obs", "Sim mean", "Sim draws"),  # Legend texts
+#        lty = c(NA, 1,1),           # Line types
+#        pch=c(19,NA,NA),
+#        col = c("black", "red","blue"),           # Line colors
+#        lwd = 2)                 # Line width
+
+
+simulation_results <- matrix(ncol = length(finish), nrow = 250)
+
+for(i in 1:250){
+  
+  k = sample(1:nrow(draws_PK),1)
+  
+  if(model == "PK2"){
+    pars <- c(
+      k_PlasKid = draws_PK[[k, "X1.k_PlasKid"]],
+      k_ePlas = draws_PK[[k, "X1.k_ePlas"]],
+      k_KidPlas = draws_PK[[k, "X1.k_KidPlas"]],
+      k_eKid = draws_PK[[k, "X1.k_eKid"]])
+  } else if (model == "PK3"){
+    pars <- c(
+      k_PlasKid = draws_PK[[k, "X1.k_PlasKid"]],
+      k_ePlas = draws_PK[[k, "X1.k_ePlas"]],
+      k_KidPlas = draws_PK[[k, "X1.k_KidPlas"]],
+      k_eKid = draws_PK[[k, "X1.k_eKid"]],
+      k_AccuKid = draws_PK[[k, "X1.k_AccuKid"]],
+      k_KidAccu = draws_PK[[k, "X1.k_KidAccu"]]
+      )
+  }
+  
+   
+  if(model == "PK2"){
+    inistate = c(Plasma = draws_PK[[k, "X1.Plasma0"]], KidneyPt = 0)}
+  else if(model=="PK3"){
+    inistate = c(Plasma = draws_PK[[k, "X1.Plasma0"]], KidneyPt = 0, AccuPt = 0)}
+  
+  out = ode(y=inistate, times=finish, func=get(paste0("Vivo",model)), parms=pars)
+  out = as.data.frame(out)
+  if(model == "PK2"){
+    out["KidneyPt"] = draws_PK[[k, "X1.scale"]]*(out["KidneyPt"])}
+  if(model == "PK3"){
+    out["Total Kidney"] = draws_PK[[k, "X1.scale"]]*(out["KidneyPt"] + out["AccuPt"])}
+  
+  lines(out %>% select(time,all_of(variable_name)), main="", ylab="x", col = alpha("blue",0.1), lty=1)
+  
+  simulation_results[i, ] <- out[[variable_name]]
+  
+}
+
+mean_results <- apply(simulation_results, 2, mean)
+lines(finish, mean_results, type = "l", col = "red", lwd = 2)
+
+plot = recordPlot()
+tiff(paste0(output_dir, "/", variable_name, ".png"), units = "in", width = 7, height = 5.3, res = 700, compression = 'lzw')
+print(plot)
+dev.off()
+
+pdf(paste0(output_dir, "/", variable_name, ".pdf"), width = 9, height = 5.3)  # Set width and height in inches
+print(plot)  
+dev.off()
+
+```
+
+
+```{r}
+fit <- readRDS(paste0(Stan_folder, "/", model, "/", timestamp, "/fit_pk_", number, ".rds"))
+
+# Extract draws and convert to data frame with iteration and chain
+pars2 = c("k_PlasKid", "k_ePlas", "k_KidPlas", "k_eKid", "Plasma0", "scale")
+pars3 = c("k_PlasKid", "k_ePlas", "k_KidPlas", "k_eKid", "k_AccuKid", "k_KidAccu", "Plasma0", "scale")
+
+draws_df <- fit$draws(format = "df", variables = get(paste0("pars", number)))
+
+# Custom labels using expressions for ggplot2
+custom_labels <- c(
+  k_PlasKid = "k[PlasKid]",
+  k_ePlas = "k[ePlas]",
+  k_KidPlas = "k[KidPlas]",
+  k_eKid = "k[eKid]",
+  k_AccuKid = "k[AccuKid]",
+  k_KidAccu = "k[KidAccu]",
+  Plasma0 = "Plasma[0]"
+)
+
+# Remove unnecessary columns
+draws_df <- draws_df %>% select(-.draw)
+
+# Base theme with larger axis title, facet text size, legend text size, and tick labels
+base_theme <- theme_minimal() + 
+  theme(
+    axis.title = element_text(size = 22),  # Larger axis titles
+    strip.text = element_text(size = 22),  # Larger facet labels
+    legend.title = element_text(size = 22), # Larger legend title
+    legend.text = element_text(size = 22),  # Larger legend text
+    axis.text = element_text(size = 16),    # Larger tick labels
+    legend.margin = margin(t = 0, r = 30, b = 0, l = 0)  # Increase margin around legend
+  )
+
+# Function to round axis labels to 3 decimal places
+round3 <- label_number(accuracy = 0.001)
+
+# Create trace plot
+fit_trace <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = .iteration, y = value, color = as.factor(.chain))) +
+  geom_line(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_color_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Iteration", y = "Parameter value", color = "Chain") +
+  scale_x_continuous(breaks = c(0, 2000, 4000)) +  # Adjust x-axis breaks
+  base_theme
+
+fit_density <- draws_df %>%
+  pivot_longer(cols = -c(.iteration, .chain), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value, fill = as.factor(.chain))) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable = as_labeller(custom_labels, label_parsed))) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#0072B2")) +
+  labs(x = "Parameter value", y = "Density", fill = "Chain") +
+  scale_x_continuous(labels = round3, breaks = function(x) {
+    breaks <- pretty(x, n = 2)
+    if (length(breaks) < 2) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust x-axis breaks to three values with 3 decimal digits
+  scale_y_continuous(breaks = function(x) {
+    breaks <- pretty(x, n = 2)
+    if (length(breaks) < 2) {
+      breaks <- c(min(x), (min(x) + max(x)) / 2, max(x))
+    }
+    breaks
+  }) +  # Adjust y-axis breaks to three values
+  base_theme
+
+
+
+# Save the plots as TIFF files
+tiff(paste0(output_dir, "/", "Trace-plot_PK",number, ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_trace)
+dev.off()
+
+tiff(paste0(output_dir, "/", "Density-plot_PK",number, ".png"), units = "in", width = 9, height = 5.3, res = 700, compression = 'lzw')
+print(fit_density)
+dev.off()
+
+# Display the plots together
+grid.arrange(fit_trace, fit_density, ncol = 1)
+
+```
+

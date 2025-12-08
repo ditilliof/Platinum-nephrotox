@@ -1,0 +1,16 @@
+
+Model fitted: Log-logistic (ED50 as parameter) (4 parms)
+
+Parameter estimates:
+
+                Estimate Std. Error  t-value   p-value    
+b:(Intercept) -3.0067569  0.0482540 -62.3111 0.0002575 ***
+c:(Intercept) -0.0017429  0.0015368  -1.1341 0.3743789    
+d:(Intercept)  0.7380160  0.0050820 145.2226 4.741e-05 ***
+e:(Intercept) 44.2546249  0.2835171 156.0916 4.104e-05 ***
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+Residual standard error:
+
+ 0.00202381 (2 degrees of freedom)

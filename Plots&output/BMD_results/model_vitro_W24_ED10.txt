@@ -1,0 +1,2 @@
+       Estimate Std. Error    Lower    Upper
+e:1:10 28.54489  0.8392282 26.38758 30.70219
