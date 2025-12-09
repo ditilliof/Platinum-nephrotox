@@ -199,18 +199,6 @@ process_histopathology <- function(df, header_row, statevar, concentration = 5) 
     )
 }
 
-KF <- process_histopathology(
-  TransQST_WP6_Cisplatin_Time_Course_Histopathology_Fibrosis,
-  header_row = cols_hist,
-  statevar   = "KF"
-)
-
-CD_hist <- process_histopathology(
-  TransQST_WP6_Cisplatin_Time_Course_Histopathology_Necrosis,
-  header_row = cols_hist,
-  statevar   = "CD"
-)
-
 filter_and_summ = function(df, module_num) {
   df_name <- deparse(substitute(df))  # Capture the original name
   
