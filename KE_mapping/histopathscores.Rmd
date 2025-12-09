@@ -1,6 +1,6 @@
 ---
 title: "Histopathology scores"
-author: "me"
+author: "Filippo Di Tillio"
 date: "2024-11-27"
 output: html_document
 ---
