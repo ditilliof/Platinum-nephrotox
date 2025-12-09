@@ -509,7 +509,7 @@ KFCD_max <- sapply(doses_vivo, function(dose) {
   
     pars <- modelParams$pars
     
-    inistate_vivo <- c(Dose = PK_pars[["Plasma0", "mean"]] * factor_vivo, KidneyPt = 0, AccuPt =
+    inistate_vivo <- c(Plasma = PK_pars[["Plasma0", "mean"]] * factor_vivo, KidneyPt = 0, AccuPt =
                          0, DD = 0, CD = 0, INF = draws_cis[[k,"INF0"]], KF = 0, p = 10)
     out = ode(y=inistate_vivo, times=finish_vivo, func=get("Cisplatinvivo"), parms=pars)
   
@@ -705,7 +705,7 @@ DDvivo_max <- sapply(doses_vivo, function(dose) {
   for(i in 1:num_sim){
     k = sample(1:nrow(draws_cis),1)
   
-    modelParams <- setModelParameters("Cisplatinvivo", draws_cis, k)
+    modelParams <- setModelParameters_vivo("Cisplatinvivo", draws_cis, k)
   
     pars <- modelParams$pars
     
@@ -746,7 +746,7 @@ DDvitro_max <- sapply(conc_vitro, function(dose) {
       p = draws_vitro[[k,"p"]],
       h = draws_vitro[[k,"h"]])
     
-    out_vitro <- as.data.frame(ode(y = inistate_vitro, times = finish_vitro, func = get(model_vitro), parms = pars_vitro))
+    out_vitro <- as.data.frame(ode(y = inistate_vitro, times = finish_vitro, func = Model7, parms = pars_vitro))
     simulation_output <- as.data.frame(out_vitro)
     simulation_results[i, ] <- simulation_output[["DD"]]
     }
@@ -850,7 +850,7 @@ CD_67 <- sapply(doses_vivo, function(dose) {
     pars <- modelParams$pars
     
     inistate_vivo <- c(
-      Dose = PK_pars[["Plasma0", "mean"]] * factor_vivo,
+      Plasma = PK_pars[["Plasma0", "mean"]] * factor_vivo,
       KidneyPt = 0, AccuPt = 0, DD = 0, CD = 0,
       INF = draws_cis[[k,"INF0"]], KF = 0, p = 10
     )
