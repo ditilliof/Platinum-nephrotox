@@ -25,7 +25,8 @@ Stan_PK = "../Stanresults/PK3"
 data_vitro = "../data/in vitro"
 data_vivo = "../data/in vivo"
 timestamp_PK = "2024-07-22_15-15-34"
-timestamp_vitro = "2024-08-05_11-21-18"
+timestamp_vitro = "2024-08-05_11-21-18"  #EGs
+#timestamp_vitro = "2024-08-26_12-03-03" #IGS
 timestamp_vivo = "2024-08-07_10-34-00"
 method = "EGs"
 source("./ODEs.R")
