@@ -4,7 +4,7 @@ This repository contains the complete workflow for processing data, performing k
 
 ---
 
-## 1. Data Analysis (normalisation)
+## 1. Data Analysis
 
 ### In vivo data
 
