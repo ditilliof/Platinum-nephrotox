@@ -70,7 +70,7 @@ input_matrix = data.frame(apply(input_matrix, 2, function(x) (x - mean(x)) / sd(
 Pear_vivo = abs(cor(input_matrix, method = "pearson"))
 
 #Import input matrix for in vitro data
-input_matrix_original = readRDS(file = paste0(vivodir,"/expression_wide_vitro.RDS"))
+input_matrix_original = readRDS(file = paste0(vitrodir,"/expression_wide_vitro.RDS"))
 
 input_matrix = input_matrix_original %>%
   separate(col = "gene_symbol_entrez_id", into = c("gene_symbol","entrez_id"), sep = "_", remove = FALSE) %>%
@@ -157,12 +157,12 @@ dd_scores_vitro <- compute_score_vitro(log2repsub,Pear_dd_vitro,dd_genes_vitro,"
 
 Pear_vivo = as.data.frame(Pear_vivo)
 
-Pear_dd_vivo = Pear[dd_genes_vivo,dd_genes_vivo]
-inf_genes_vivo = inf_genes[inf_genes_vivo%in%colnames(Pear_vivo)]
-Pear_inf_vivo = Pear[inf_genes_vivo, inf_genes_vivo] 
+Pear_dd_vivo = Pear_vivo[dd_genes_vivo,dd_genes_vivo]
+inf_genes_vivo = inf_genes_vivo[inf_genes_vivo%in%colnames(Pear_vivo)]
+Pear_inf_vivo = Pear_vivo[inf_genes_vivo, inf_genes_vivo] 
 
-dd_ppt_scores_vivo <- compute_score(cpmNormalized_l2fc_meanCont_ppt,Pear_dd_vivo,dd_genes_vivo,"DD")
-inf_ppt_scores_vivo <- compute_score(cpmNormalized_l2fc_meanCont_ppt,Pear_inf_vivo,inf_genes_vivo,"INF")
+dd_ppt_scores_vivo <- compute_score_vivo(cpmNormalized_l2fc_meanCont_ppt,Pear_dd_vivo,dd_genes_vivo,"DD")
+inf_ppt_scores_vivo <- compute_score_vivo(cpmNormalized_l2fc_meanCont_ppt,Pear_inf_vivo,inf_genes_vivo,"INF")
 
 
 
@@ -242,7 +242,7 @@ Necro_AOP = Necro_adj  %>% mutate(TIME = timeAfterExposure, DOSE = dose_uM, Stat
   select(-c(1:6))
 
 write.csv(x = Necro_AOP, file = paste0(vitrodir, "NecroAOPnocc_fulltime.csv"))
-write.csv(dd_scores, paste0(vitrodir,'/','IGS_invitroqAOP_20240822.csv'))
+write.csv(dd_scores_vitro, paste0(vitrodir,'/','IGS_invitroqAOP_20240822.csv'))
 ```
 
 
