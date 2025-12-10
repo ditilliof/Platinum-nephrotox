@@ -17,13 +17,18 @@ pacman::p_load(tidyverse, readr, deSolve, conflicted,scales, readxl)
 
 conflict_prefer("filter","dplyr")
 conflict_prefer("sd","stats")
+conflict_prefer("select","dplyr")
 
 source('./IGSfunctions.R')
 vivodir = "../data/in vivo"
 vitrodir = "../data/in vitro"
 PlotOXdir = "../Plots&output/Oxstress"
+Plotmapdir = "../Plots&output/Map_methods"
 if (!dir.exists(PlotOXdir)) {
   dir.create(PlotOXdir)
+}
+if (!dir.exists(Plotmapdir)) {
+  dir.create(Plotmapdir)
 }
 ```
 
@@ -39,6 +44,16 @@ cpmNormalized_l2fc_meanCont <- read.delim(paste0(vivodir,"/DEGsfiltered_vs_corre
 cpmNormalized_l2fc_meanCont_ppt = cpmNormalized_l2fc_meanCont %>% filter(LOCATION_ID == 'PPT')
 
 log2repsub <- read_csv(paste0(vitrodir,"/EUT046_expression_long.csv")) %>% drop_na() %>% dplyr::rename("l2fc" = 'log2fc')
+
+Orthology <- read.delim(paste0(vivodir,"/RGD_ORTHOLOGS_NCBI.txt"))[c(1,4)] %>%
+  filter(HUMAN_ORTHOLOG_SYMBOL %in% log2repsub$gene_symbol) %>% unique()
+
+log2repsub <- log2repsub %>% 
+  drop_na() %>% 
+  left_join(Orthology, by = c("gene_symbol" = "HUMAN_ORTHOLOG_SYMBOL")) %>%
+  drop_na() %>%
+  select(-gene_symbol) %>%
+  rename(gene_symbol = RAT_GENE_SYMBOL)
 ```
 
 #Import input matrix for in vivo data
@@ -69,35 +84,10 @@ input_matrix = data.frame(apply(input_matrix, 2, function(x) (x - mean(x)) / sd(
 
 Pear_vivo = abs(cor(input_matrix, method = "pearson"))
 
-#Import input matrix for in vitro data
-input_matrix_original = readRDS(file = paste0(vitrodir,"/expression_wide_vitro.RDS"))
-
-input_matrix = input_matrix_original %>%
-  separate(col = "gene_symbol_entrez_id", into = c("gene_symbol","entrez_id"), sep = "_", remove = FALSE) %>%
-  mutate(entrez_id = paste0("id_",gene_symbol)) %>%
-  dplyr::select(-basemean, -gene_symbol_entrez_id, -entrez_id) %>%
-  pivot_longer(cols = !c(gene_symbol)) %>% #changed
-  pivot_wider(names_from = gene_symbol  , values_from = value) %>%
-  column_to_rownames(var ="name")
-
-input_matrix = data.frame(apply(input_matrix, 2, function(x) (x - mean(x)) / sd(x) ))
-
-#Generate pearson correlation matrix (alternative to adjacency)
-
-Pear_vitro = abs(cor(input_matrix, method = "pearson"))
-```
-
-#The "Gene_symbol" column in "log2repsub" needs to be uptated, some of the gene symbols there are outdated.
-```{r}
-Temposeq_manifest_1_2_realignment <- read.delim(paste0(vitrodir,"/Temposeq_manifest_1.2_realignment.txt"))
-
-Orthology <- read.delim(paste0(vivodir,"/RGD_ORTHOLOGS_NCBI.txt"))[c(1,4)]
-
-
-filtered_symbols = Temposeq_manifest_1_2_realignment %>% dplyr::filter(Gene_Symbol %in% log2repsub$gene_symbol) %>% drop_na() %>%
-  select(Gene_Symbol, gene_symbol, entrez_id) %>% unique() 
+#Pear_vivo = read.csv(paste0(vivodir,"/Pear_rat.csv")) #if the pearson cor matrix is already in the data folder
 
 ```
+
 
 #Obtain corEG distribution for the modules of interest, using the in vivo rat modules 
 ```{r}
@@ -131,36 +121,37 @@ probabilities_dd <- hist_dd$counts / sum(hist_dd$counts)
 probabilities_inf <- hist_inf$counts / sum(hist_inf$counts)
 
 # Plot the histogram with colored bars
-barplot(probabilities_tot, names.arg = hist_tot$mids, main = "corEG distribution for all genes", font.lab=2)
+tiff(paste0(Plotmapdir,"/corEG_allgenes.tiff"),
+     units = "in", width = 5, height = 3, res = 700, compression = "lzw")
+
+barplot(probabilities_tot,
+        names.arg = hist_tot$mids,
+        main = "corEG distribution for all genes",
+        font.lab = 2)
+
+dev.off()
 
 barplot(probabilities_dd, names.arg = hist_dd$mids, col = colors_dd, main = "corEG distribution, module rKIDNEY_160")
 barplot(probabilities_inf, names.arg = hist_inf$mids, col = colors_inf, main = "corEG distribution, module rKIDNEY_7m")
 ```
 
-#define gene sets for each KE
+
+#define gene sets for each KE and compute IGS
 ```{r}
 dd_genes_vivo <- unlist(corEG_modulerat160 %>% filter(corr_egs>threshold) %>% select(gene_symbol))
 
 inf_genes_vivo <- unlist(corEG_modulerat7m %>% filter(corr_egs>threshold) %>% select(gene_symbol))
 
-#We need to map the rat gene names into human for the in vitro calculations
-dd_genes_vitro <- unlist(Orthology %>% dplyr::filter(RAT_GENE_SYMBOL %in% dd_genes_vivo) %>% unique() %>% rbind(c(dd_genes_vivo[which(!(dd_genes_vivo %in% Orthology$RAT_GENE_SYMBOL))],toupper(dd_genes_vivo[which(!(dd_genes_vivo %in% Orthology$RAT_GENE_SYMBOL))]))) %>% select(2))
-```
-
-
-#IGS
-```{r}
-Pear_vitro = as.data.frame(Pear_vitro)
-dd_genes_vitro = dd_genes_vitro[dd_genes_vitro %in% colnames(Pear_vitro)]
-Pear_dd_vitro = Pear_vitro[dd_genes_vitro,dd_genes_vitro]
-dd_scores_vitro <- compute_score_vitro(log2repsub,Pear_dd_vitro,dd_genes_vitro,"DD")
 
 Pear_vivo = as.data.frame(Pear_vivo)
 
+
 Pear_dd_vivo = Pear_vivo[dd_genes_vivo,dd_genes_vivo]
+dd_genes_vivo = dd_genes_vivo[dd_genes_vivo%in%colnames(Pear_vivo)]
 inf_genes_vivo = inf_genes_vivo[inf_genes_vivo%in%colnames(Pear_vivo)]
 Pear_inf_vivo = Pear_vivo[inf_genes_vivo, inf_genes_vivo] 
 
+dd_scores_vitro <- compute_score_vitro(log2repsub,Pear_dd_vivo,dd_genes_vivo,"DD")
 dd_ppt_scores_vivo <- compute_score_vivo(cpmNormalized_l2fc_meanCont_ppt,Pear_dd_vivo,dd_genes_vivo,"DD")
 inf_ppt_scores_vivo <- compute_score_vivo(cpmNormalized_l2fc_meanCont_ppt,Pear_inf_vivo,inf_genes_vivo,"INF")
 
@@ -299,8 +290,8 @@ r160_stan = EGs_vitro_160_summ %>% mutate(StateVar = "DD") %>%
 
 write.table(r160_stan, paste0(vitrodir, "/invitro160", ".csv"), sep = ",")
 ```
-#Show that oxidative stress modules are not feasible for modeling
 
+#Show that oxidative stress modules are not feasible for modeling
 ```{r}
 
 EGscore_ppt_perreplicate2 = EGscore_ppt_perreplicate2 %>%
@@ -349,23 +340,15 @@ plot_vitro_single_dose(160, 20)
 
 ```
 
-#Plot individual relevant Oxidative Stress genes to support module deactivation
+
 ```{r}
 
-human_genes <- c("NFE2L2", "GCLC", "GCLM", "SOD1", "SOD2", "CAT", 
-                 "TXN", "NQO1", "FTH1", 'TXNRD1', 'SQSTM1', 'HMOX1')
 rat_genes <- c("Nfe2l2", "Gclc", "Gclm", "Sod1", "Sod2", "Cat", 
                 "Nqo1", "Fth1", "Txnrd1", "Sqstm1", "Hmox1")
 
-
-
-
-```
-
-```{r}
 # Filter the dataset for the genes of interest
 filtered_data <- log2repsub %>%
-  filter(gene_symbol %in% human_genes)
+  filter(gene_symbol %in% rat_genes)
 
 # Calculate mean and standard deviation of l2fc across replicates
 summary_data <- filtered_data %>%
@@ -431,4 +414,290 @@ plot_oxgenes_tiff(
 )
 
 ```
+
+
+```{r}
+
+EGs_vitro = EGs_vitro %>% separate(col = module, into= c("drop", "module_number"), remove = FALSE) %>% select(-drop)
+
+
+# Convert to data.table for faster processing
+setDT(EGs_vitro)
+setDT(corEG_table)
+
+# Precompute and store the data for each module number
+
+TXG_list <- vector("list")
+IGS_list <- vector("list")
+
+total_modules <- length(unique(EGs_vitro$module_number))
+current_index <- 0
+
+
+# Pre-filter corEG_table to improve efficiency in the loop
+
+corEG_table_filtered <- corEG_table[grep("rKIDNEY_", module) & abs(corr_egs) > 0.5, .(module, gene_symbol)]
+
+# Iterate over each module number
+
+for(i in unique(EGs_vitro$module_number)) {
+  
+  current_index <- current_index + 1
+
+  # Print progress update at the start of each iteration
+  print(paste("Starting processing for module:", i, 
+              "(", current_index, "/", total_modules, ") -", 
+              round(current_index / total_modules * 100, 2), 
+              "% completed"))
+  TXG_list[[i]] <- EGs_vitro[module_number == i, .(eg_score, REPLICATE, time, DOSE)][order(DOSE, REPLICATE, time)]   
+  genes <- corEG_table_filtered[gsub("rKIDNEY_", "", module) == i, gene_symbol]  
+  genes <- genes[genes %in% colnames(Pear_vivo)]
+  genes <- genes[genes %in% unique(log2repsub$gene_symbol)]
+  
+  IGS_list[[i]] <- as.data.frame(compute_score_woutlabel_vitro(log2repsub, Pear_vivo[genes, genes, drop = FALSE], genes))
+  
+  }
+
+all(names(IGS_list) == names(TXG_list)) #TRUE
+
+# Convert back to data.frame
+
+EGs_vitro <- as.data.frame(EGs_vitro)
+corEG_table <- as.data.frame(corEG_table)
+
+
+score_TXG_list <- lapply(TXG_list, function(df) df[, 1])
+score_IGS_list <- lapply(IGS_list, function(df) df[, 1])
+
+TXG_full <- as.data.frame(do.call(cbind, score_TXG_list))
+IGS_full <- as.data.frame(do.call(cbind, score_IGS_list))
+
+
+TXG_full = TXG_full %>% mutate(across(everything(), ~replace(., is.na(.), 0)))
+IGS_full = IGS_full %>% mutate(across(everything(), ~replace(., is.na(.), 0)))
+
+
+sd_values_TXG <- sapply(TXG_full, sd, na.rm = TRUE)
+zero_sd_indices_TXG <- which(sd_values_TXG == 0)
+sd_values_IGS <- sapply(IGS_full, sd, na.rm = TRUE)
+zero_sd_indices_IGS <- which(sd_values_IGS == 0)
+
+TXG_full = TXG_full[,-c(zero_sd_indices_TXG,zero_sd_indices_IGS)]
+IGS_full = IGS_full[,-c(zero_sd_indices_TXG,zero_sd_indices_IGS)]
+
+
+correlations = sapply(1:ncol(TXG_full), function(n) cor(TXG_full[,n],IGS_full[,n]))
+
+
+```
+
+
+```{r}
+#create a vector in which entry n is the fraction of genes preserved according to the corEG cut off
+preserved_genes = data.frame(pres_perc = numeric(), module = character(), module_number = character())
+for(i in colnames(IGS_full)){
+  if(nrow(corEG_table %>% dplyr::filter(module == paste0("rKIDNEY_",i)) %>% select(gene_symbol))>0){
+    preserved_genes[i,'pres_perc'] = nrow(corEG_table %>% 
+                                            dplyr::filter(module == paste0("rKIDNEY_",i), corr_egs>0.5) %>% select(gene_symbol))/nrow(corEG_table %>% dplyr::filter(module == paste0("rKIDNEY_",i)) %>% select(gene_symbol))
+    preserved_genes[i,'module'] = paste0("rKIDNEY_",i)
+    preserved_genes[i,'module_number'] = i
+  }
+  else{
+    preserved_genes[i,'pres_perc'] = 0
+    preserved_genes[i,'module'] = paste0("rKIDNEY_",i)
+    preserved_genes[i,'module_number'] = i
+  }
+}
+preserved_genes = merge(preserved_genes, EGs_vitro, by = c('module',"module_number")) %>% select(pres_perc, module, module_size, module_number) %>% unique()
+
+
+ggplot() + theme_classic()  +
+  geom_point(data = preserved_genes, aes(x = module_size, y = pres_perc)) + scale_x_continuous(trans = 'log2') +
+  labs(title = "Percentage of preserved genes as function of the module size", subtitle = "filter: corEG>0.5", x = "module size", y= "Preserved genes(%)")
+
+preserved_genes = preserved_genes %>%
+  mutate(
+    numeric_part = as.numeric(str_extract(module_number, "^[0-9]+"))  # Extracts numbers before any character
+  ) %>%
+  arrange(numeric_part)
+```
+
+
+
+```{r, fig.width=10, fig.height=8.5}
+n_columns <- 16
+n_rows <- nrow(preserved_genes)
+
+# Number of rows needed, accounting for the last partially filled row
+n_full_rows <- ceiling(n_rows / n_columns)  # Use ceiling to ensure all items fit
+
+# Create a grid layout considering the possibility of a partially filled last row
+grid_data <- expand.grid(
+  Row = 1:n_full_rows,             # Rows from 1 to the number of full rows
+  Column = 1:n_columns             # Columns from 1 to n_columns
+)
+
+# Ensure the grid_data is limited to the number of items in preserved_genes
+grid_data <- grid_data[1:n_rows, ]
+
+# Center the points in the grid cells by adding a 0.5 offset
+grid_data$Row <- grid_data$Row - 0.5    # Adjust if needed based on plotting preference
+grid_data$Column <- grid_data$Column - 0.5
+
+# Make sure grid_data and preserved_genes have the same number of rows before combining
+if (nrow(grid_data) != nrow(preserved_genes)) {
+  stop("Mismatch in row numbers between grid layout and data.")
+}
+
+# Combine grid data with the gene data
+combined_data <- cbind(grid_data, preserved_genes)
+
+# Plotting the data with adjusted coordinates
+p1 = ggplot(combined_data, aes(x = Column, y = -Row)) +
+  geom_point(aes(size = pres_perc, color = correlations), alpha = 0.7) +
+  geom_text(aes(label = module_number), vjust = 1, size = 3, color = "black", fontface = "bold") +
+  scale_size_continuous(range = c(2, 10)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  labs(x = "", y = "",
+       title = "",
+       size = "Gene set preservation (%)", color = "Pearson correlation (EG score vs IGS score)") +
+  theme_minimal() +
+  theme(axis.text = element_blank(), axis.ticks = element_blank(),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+        panel.grid = element_blank())  # Remove grid lines
+
+p1
+```
+
+
+
+```{r}
+dt = vector()
+dt[1] = sort(unique(EGs_vitro$time))[1]
+for (i in 2:length(sort(unique(EGs_vitro$time)))){
+  dt[i] = sort(unique(EGs_vitro$time))[i]- sort(unique(EGs_vitro$time))[i-1]
+}
+AUC <- function(df) {
+  return(sum(dt * df[,3]))
+}
+
+mean_TXG <- function(df) {
+  df %>%
+    group_by(DOSE, time) %>%
+    summarise(mean_eg_score = mean(eg_score, na.rm = TRUE), .groups = 'drop')
+}
+
+mean_IGS <- function(df) {
+  df %>%
+    group_by(DOSE, TIME) %>%
+    summarise(mean_score = mean(Score, na.rm = TRUE), .groups = 'drop')
+}
+
+TXG_mean_list <- lapply(TXG_list[-c(zero_sd_indices_TXG,zero_sd_indices_IGS)], mean_TXG)
+IGS_mean_list <- lapply(IGS_list[-c(zero_sd_indices_TXG,zero_sd_indices_IGS)], mean_IGS)
+
+
+```
+
+#select a dose and calculate AUC per module
+```{r}
+
+process_dose <- function(dose, list_TXG, list_IGS, AUC_function) {
+  # Filter each list for the given dose
+  TXG_filtered <- lapply(list_TXG, function(df) {
+    df %>% filter(DOSE == dose)
+  })
+  IGS_filtered <- lapply(list_IGS, function(df) {
+    df %>% filter(DOSE == dose)
+  })
+
+  # Calculate AUC for each filtered list
+  AUC_TXG <- lapply(TXG_filtered, AUC_function)
+  AUC_IGS <- lapply(IGS_filtered, AUC_function)
+
+  # Convert AUC results to data frames
+  AUC_TXG_df <- data.frame(AUC = unlist(AUC_TXG))
+  rownames(AUC_TXG_df) =  names(unlist(AUC_TXG))
+  AUC_IGS_df <- data.frame(AUC = unlist(AUC_IGS))
+  rownames(AUC_IGS_df) =  names(unlist(AUC_IGS))
+
+  # Compute AUC ratio
+  AUC_ratio <- AUC_TXG_df$AUC / AUC_IGS_df$AUC
+
+  # Return results as a list of data frames for flexibility
+  list(AUC_TXG_df = AUC_TXG_df, AUC_IGS_df = AUC_IGS_df, AUC_ratio = AUC_ratio)
+}
+
+# Assuming all data frames have the same dose levels, extract from the first non-empty data frame
+all_doses <- unique(unlist(lapply(TXG_mean_list, function(df) unique(df$DOSE))))
+
+# Apply the function across all dose levels
+AUC_results <- lapply(all_doses, function(dose) process_dose(dose, TXG_mean_list, IGS_mean_list, AUC))
+
+names(AUC_results) = all_doses
+
+
+```
+
+
+
+
+```{r}
+module_names <- names(TXG_mean_list)
+# Assuming 'doses' contains the names of the dose levels
+doses <- names(AUC_results)
+
+# Create a single DataFrame with all data
+auc_data <- map_df(doses, function(dose) {
+    if (!is.null(AUC_results[[dose]]) && !is.null(AUC_results[[dose]]$AUC_ratio)) {
+        # Retrieve the AUC ratios
+        auc_ratios <- AUC_results[[dose]]$AUC_ratio
+        auc_TXG = AUC_results[[dose]]$AUC_TXG_df
+        auc_IGS = AUC_results[[dose]]$AUC_IGS_df
+        
+        # Create DataFrame using module names as identifiers
+        data.frame(
+            module_number = module_names,
+            dose = rep(as.numeric(dose), length(auc_ratios)),
+            AUC_ratio = unlist(auc_ratios),
+            auc_TXG = unlist(auc_TXG),
+            auc_IGS = unlist(auc_IGS)
+        )
+    } else {
+        # Return an empty DataFrame if the structure is not as expected
+        data.frame(module_number = character(0), dose = numeric(0), AUC_ratio = numeric(0), auc_TXG = numeric(0), auc_IGS = numeric(0))
+    }
+}, .id = "dose_id")
+
+# Check the resulting DataFrame
+print(head(auc_data))
+auc_data$dose <- as.factor(auc_data$dose)
+# Create a density plot
+p2 = ggplot(auc_data, aes(x = AUC_ratio, fill = dose)) +
+  geom_density(alpha = 0.6) + 
+  facet_wrap(~ dose, scales = "free_x") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(title = "",
+       x = "AUC Ratio", y = "Density", fill = "dose (uM)") +
+  geom_vline(xintercept = 1, color = "red", size = 0.5) +
+  theme_minimal() +
+  coord_cartesian(xlim = c(-10, 20))
+
+p2
+
+```
+
+#Save Plots
+```{r}
+tiff(paste0(Plotmapdir,"/TXG_MAP_IGS_comparison_cor", ".png"), units="in", width=10, height=8.5, res=700, compression = 'lzw')
+print(p1)
+dev.off()
+
+tiff(paste0(Plotmapdir,"/distribution_AUC_comparison", ".png"), units="in", width=5, height= 5, res=700, compression = 'lzw')
+print(p2)
+dev.off()
+
+
+```
+
 

@@ -199,6 +199,7 @@ process_histopathology <- function(df, header_row, statevar, concentration = 5) 
     )
 }
 
+
 filter_and_summ = function(df, module_num) {
   df_name <- deparse(substitute(df))  # Capture the original name
   
