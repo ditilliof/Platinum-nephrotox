@@ -27,25 +27,12 @@ functions {
     real p = theta[17];
 
 
-    real dQapi = Ncell*(p - NEC) * (Fouta * Qcell/(Ncell*Vcell) - Fina * Qapi/Vapi ); // change in time in amount cisplatin in apical medium in ug/h
-    real dQbas = Ncell *(p - NEC)* (Foutb * Qcell/(Ncell*Vcell) - Finb * Qbas/Vbas); // change in time in amount cisplatin in basolateral medium in ug/h
-    real dQcell = Ncell *(p - NEC)* (Fina * Qapi/Vapi + Finb * Qbas/Vbas - (Fouta + Foutb) * Qcell/(Ncell*Vcell)- Kmet * Qcell/(Ncell*Vcell)); // change in amount of cisplatin in cells in ug/h
+    real dQapi = Ncell * (Fouta * Qcell/(Ncell*Vcell) - Fina * Qapi/Vapi - Kmet * Qcell/(Ncell*Vcell)); // change in time in amount cisplatin in apical medium in ug/h
+    real dQbas = Ncell * (Foutb * Qcell/(Ncell*Vcell) - Finb * Qbas/Vbas); // change in time in amount cisplatin in basolateral medium in ug/h
+    real dQcell = Ncell * (Fina * Qapi/Vapi + Finb * Qbas/Vbas - (Fouta + Foutb) * Qcell/(Ncell*Vcell)); // change in amount of cisplatin in cells in ug/h
     real dQinter = k_inter * (Qcell-Qinter);
     real dDD = -degDD * DD + (k_cDD * Qinter)/(hillDD + Qinter);
     real dNEC = ((maxdeath * DD^h)/(k_hillnec^h + DD^h))*(p - NEC); 
-    
-    // Check for invalid parameter values (in theta)
-    for (i in 1 : size(theta)) {
-      if (!is_finite(theta[i]))
-        reject("theta[", i, "] is not finite: ", theta[i]);
-    }
-
-// Check for invalid state variables (in y)
-    for (i in 1 : size(y)) {
-      if (!is_finite(y[i]))
-        reject("y[", i, "] is not finite at time ", t, ": ", y[i]);
-    }
-
 
     return {dQapi, dQbas, dQcell, dQinter, dDD, dNEC};
   }
@@ -177,32 +164,19 @@ transformed parameters {
 
 model {
   // Priors
-  // k_cDD ~ normal(0.2867653965, 0.5);
-  // degDD ~ normal(0.0567184119, 0.5);
-  // hillDD ~ normal(0.0019195344, 0.5);
-  // k_inter ~ normal(1.170355e-01, 0.5);
-  // maxdeath ~ normal(0.6633626532, 0.5);
-  // k_hillnec ~ normal(4.5413255075, 0.5);
-  // p ~ normal(0.8, 0.2);
-  // h ~ normal(20,4);
-  // 
-  // // Priors for degrees of freedom
-  // nu_DD ~ gamma(2, 0.1); // Prior for nu, making it robust
-  // nu_NEC ~ gamma(2, 0.1);
-  
-   // Priors for model parameters
-  k_cDD ~ normal(0.5, 0.25);   // Lognormal to reflect positive, skewed values
-  degDD ~ normal(0.5, 0.25);    // Lognormal for small decay rates, reflecting skew
-  hillDD ~normal(0.5, 0.25);  // Small positive values, use lognormal
-  k_inter ~  normal(0.5, 0.25);   // Interaction rate, lognormal skewed
-  maxdeath ~ normal(1.0, 0.3);     // Centered on 1.0 with some variability
-  k_hillnec ~ normal(5.0, 0.5);    // Centered on 5.0 to reflect central tendency
-  p ~ beta(2, 2);                  // Beta distribution for bounded parameter (0, 1)
-  h ~ normal(20, 3);               // High centrality with narrower uncertainty
+ 
+  k_cDD ~ lognormal(-1.25, 0.5);   
+  degDD ~ lognormal(-3.0, 0.5);    
+  hillDD ~ lognormal(-6.0, 0.5);   
+  k_inter ~ lognormal(-2.5, 0.5);  
+  maxdeath ~ normal(1.0, 0.3);     
+  k_hillnec ~ normal(5.0, 0.5);    
+  p ~ beta(2, 2);                  
+  h ~ normal(20, 3);               
 
   // Priors for degrees of freedom (Student's t-distribution)
-  nu_DD ~ exponential(1);          // Exponential to encourage smaller degrees of freedom, more robustness
-  nu_NEC ~ exponential(1);         // Same reasoning, encourages t-distribution robustness
+  nu_DD ~ exponential(1);          
+  nu_NEC ~ exponential(1);        
 
   // Likelihood using Student's t-distribution
   for (n in 1 : N_DD) {
@@ -226,79 +200,79 @@ model {
   }
 }
 
-// generated quantities {
-//   vector[N_DD] logLikelihood_dd3;
-//   vector[N_NEC] logLikelihood_cd3;
-//   vector[N_DD] logLikelihood_dd4;
-//   vector[N_NEC] logLikelihood_cd4;
-//   vector[N_DD] logLikelihood_dd5;
-//   vector[N_NEC] logLikelihood_cd5;
-//   vector[N_DD] logLikelihood_dd6;
-//   vector[N_NEC] logLikelihood_cd6;
-//   vector[N_DD] logLikelihood_dd7;
-//   vector[N_NEC] logLikelihood_cd7;
-//   vector[N_DD] logLikelihood_dd8;
-//   vector[N_NEC] logLikelihood_cd8;
-//   vector[N_DD] logLikelihood_dd9;
-//   vector[N_NEC] logLikelihood_cd9;
-//   
-//   vector[N_DD + N_NEC] logLikelihood_total3;
-//   vector[N_DD + N_NEC] logLikelihood_total4;
-//   vector[N_DD + N_NEC] logLikelihood_total5;
-//   vector[N_DD + N_NEC] logLikelihood_total6;
-//   vector[N_DD + N_NEC] logLikelihood_total7;
-//   vector[N_DD + N_NEC] logLikelihood_total8;
-//   vector[N_DD + N_NEC] logLikelihood_total9;
-// 
-//   // Compute log-likelihoods for each observation
-//   for (n in 1 : N_DD) {
-//     logLikelihood_dd3[n] = student_t_lpdf(y_DD[n, 1] | nu_DD, z_DD3[n], sigma_DD[n, 1]);
-//     logLikelihood_dd4[n] = student_t_lpdf(y_DD[n, 2] | nu_DD, z_DD4[n], sigma_DD[n, 2]);
-//     logLikelihood_dd5[n] = student_t_lpdf(y_DD[n, 3] | nu_DD, z_DD5[n], sigma_DD[n, 3]);
-//     logLikelihood_dd6[n] = student_t_lpdf(y_DD[n, 4] | nu_DD, z_DD6[n], sigma_DD[n, 4]);
-//     logLikelihood_dd7[n] = student_t_lpdf(y_DD[n, 5] | nu_DD, z_DD7[n], sigma_DD[n, 5]);
-//     logLikelihood_dd8[n] = student_t_lpdf(y_DD[n, 6] | nu_DD, z_DD8[n], sigma_DD[n, 6]);
-//     logLikelihood_dd9[n] = student_t_lpdf(y_DD[n, 7] | nu_DD, z_DD9[n], sigma_DD[n, 7]);
-//   }
-// 
-//   for (n in 1 : N_NEC) {
-//     logLikelihood_cd3[n] = student_t_lpdf(y_NEC[n, 1] | nu_NEC, z_NEC3[n], sigma_NEC[n, 1]);
-//     logLikelihood_cd4[n] = student_t_lpdf(y_NEC[n, 2] | nu_NEC, z_NEC4[n], sigma_NEC[n, 2]);
-//     logLikelihood_cd5[n] = student_t_lpdf(y_NEC[n, 3] | nu_NEC, z_NEC5[n], sigma_NEC[n, 3]);
-//     logLikelihood_cd6[n] = student_t_lpdf(y_NEC[n, 4] | nu_NEC, z_NEC6[n], sigma_NEC[n, 4]);
-//     logLikelihood_cd7[n] = student_t_lpdf(y_NEC[n, 5] | nu_NEC, z_NEC7[n], sigma_NEC[n, 5]);
-//     logLikelihood_cd8[n] = student_t_lpdf(y_NEC[n, 6] | nu_NEC, z_NEC8[n], sigma_NEC[n, 6]);
-//     logLikelihood_cd9[n] = student_t_lpdf(y_NEC[n, 7] | nu_NEC, z_NEC9[n], sigma_NEC[n, 7]);
-//   }
-//   
-//   // Initialize logLikelihood_total with zeros
-//   for (n in 1 : N_DD + N_NEC) {
-//     logLikelihood_total3[n] = 0;
-//     logLikelihood_total4[n] = 0;
-//     logLikelihood_total5[n] = 0;
-//     logLikelihood_total6[n] = 0;
-//     logLikelihood_total7[n] = 0;
-//     logLikelihood_total8[n] = 0;
-//     logLikelihood_total9[n] = 0;
-//   }
-// 
-//   // Sum log-likelihood components
-//   for (n in 1 : N_DD) {
-//     logLikelihood_total3[i_ts[n]] += logLikelihood_dd3[n];
-//     logLikelihood_total4[i_ts[n]] += logLikelihood_dd4[n];
-//     logLikelihood_total5[i_ts[n]] += logLikelihood_dd5[n];
-//     logLikelihood_total6[i_ts[n]] += logLikelihood_dd6[n];
-//     logLikelihood_total7[i_ts[n]] += logLikelihood_dd7[n];
-//     logLikelihood_total8[i_ts[n]] += logLikelihood_dd8[n];
-//     logLikelihood_total9[i_ts[n]] += logLikelihood_dd9[n];
-//   }
-//   for (n in 1 : N_NEC) {
-//     logLikelihood_total3[i_ts1[n]] += logLikelihood_cd3[n];
-//     logLikelihood_total4[i_ts1[n]] += logLikelihood_cd4[n];
-//     logLikelihood_total5[i_ts1[n]] += logLikelihood_cd5[n];
-//     logLikelihood_total6[i_ts1[n]] += logLikelihood_cd6[n];
-//     logLikelihood_total7[i_ts1[n]] += logLikelihood_cd7[n];
-//     logLikelihood_total8[i_ts1[n]] += logLikelihood_cd8[n];
-//     logLikelihood_total9[i_ts1[n]] += logLikelihood_cd9[n];
-//   }
-// }
+generated quantities {
+  vector[N_DD] logLikelihood_dd3;
+  vector[N_NEC] logLikelihood_cd3;
+  vector[N_DD] logLikelihood_dd4;
+  vector[N_NEC] logLikelihood_cd4;
+  vector[N_DD] logLikelihood_dd5;
+  vector[N_NEC] logLikelihood_cd5;
+  vector[N_DD] logLikelihood_dd6;
+  vector[N_NEC] logLikelihood_cd6;
+  vector[N_DD] logLikelihood_dd7;
+  vector[N_NEC] logLikelihood_cd7;
+  vector[N_DD] logLikelihood_dd8;
+  vector[N_NEC] logLikelihood_cd8;
+  vector[N_DD] logLikelihood_dd9;
+  vector[N_NEC] logLikelihood_cd9;
+  
+  vector[N_DD + N_NEC] logLikelihood_total3;
+  vector[N_DD + N_NEC] logLikelihood_total4;
+  vector[N_DD + N_NEC] logLikelihood_total5;
+  vector[N_DD + N_NEC] logLikelihood_total6;
+  vector[N_DD + N_NEC] logLikelihood_total7;
+  vector[N_DD + N_NEC] logLikelihood_total8;
+  vector[N_DD + N_NEC] logLikelihood_total9;
+
+  // Compute log-likelihoods for each observation
+  for (n in 1 : N_DD) {
+    logLikelihood_dd3[n] = student_t_lpdf(y_DD[n, 1] | nu_DD, z_DD3[n], sigma_DD[n, 1]);
+    logLikelihood_dd4[n] = student_t_lpdf(y_DD[n, 2] | nu_DD, z_DD4[n], sigma_DD[n, 2]);
+    logLikelihood_dd5[n] = student_t_lpdf(y_DD[n, 3] | nu_DD, z_DD5[n], sigma_DD[n, 3]);
+    logLikelihood_dd6[n] = student_t_lpdf(y_DD[n, 4] | nu_DD, z_DD6[n], sigma_DD[n, 4]);
+    logLikelihood_dd7[n] = student_t_lpdf(y_DD[n, 5] | nu_DD, z_DD7[n], sigma_DD[n, 5]);
+    logLikelihood_dd8[n] = student_t_lpdf(y_DD[n, 6] | nu_DD, z_DD8[n], sigma_DD[n, 6]);
+    logLikelihood_dd9[n] = student_t_lpdf(y_DD[n, 7] | nu_DD, z_DD9[n], sigma_DD[n, 7]);
+  }
+
+  for (n in 1 : N_NEC) {
+    logLikelihood_cd3[n] = student_t_lpdf(y_NEC[n, 1] | nu_NEC, z_NEC3[n], sigma_NEC[n, 1]);
+    logLikelihood_cd4[n] = student_t_lpdf(y_NEC[n, 2] | nu_NEC, z_NEC4[n], sigma_NEC[n, 2]);
+    logLikelihood_cd5[n] = student_t_lpdf(y_NEC[n, 3] | nu_NEC, z_NEC5[n], sigma_NEC[n, 3]);
+    logLikelihood_cd6[n] = student_t_lpdf(y_NEC[n, 4] | nu_NEC, z_NEC6[n], sigma_NEC[n, 4]);
+    logLikelihood_cd7[n] = student_t_lpdf(y_NEC[n, 5] | nu_NEC, z_NEC7[n], sigma_NEC[n, 5]);
+    logLikelihood_cd8[n] = student_t_lpdf(y_NEC[n, 6] | nu_NEC, z_NEC8[n], sigma_NEC[n, 6]);
+    logLikelihood_cd9[n] = student_t_lpdf(y_NEC[n, 7] | nu_NEC, z_NEC9[n], sigma_NEC[n, 7]);
+  }
+  
+  // Initialize logLikelihood_total with zeros
+  for (n in 1 : N_DD + N_NEC) {
+    logLikelihood_total3[n] = 0;
+    logLikelihood_total4[n] = 0;
+    logLikelihood_total5[n] = 0;
+    logLikelihood_total6[n] = 0;
+    logLikelihood_total7[n] = 0;
+    logLikelihood_total8[n] = 0;
+    logLikelihood_total9[n] = 0;
+  }
+
+  // Sum log-likelihood components
+  for (n in 1 : N_DD) {
+    logLikelihood_total3[i_ts[n]] += logLikelihood_dd3[n];
+    logLikelihood_total4[i_ts[n]] += logLikelihood_dd4[n];
+    logLikelihood_total5[i_ts[n]] += logLikelihood_dd5[n];
+    logLikelihood_total6[i_ts[n]] += logLikelihood_dd6[n];
+    logLikelihood_total7[i_ts[n]] += logLikelihood_dd7[n];
+    logLikelihood_total8[i_ts[n]] += logLikelihood_dd8[n];
+    logLikelihood_total9[i_ts[n]] += logLikelihood_dd9[n];
+  }
+  for (n in 1 : N_NEC) {
+    logLikelihood_total3[i_ts1[n]] += logLikelihood_cd3[n];
+    logLikelihood_total4[i_ts1[n]] += logLikelihood_cd4[n];
+    logLikelihood_total5[i_ts1[n]] += logLikelihood_cd5[n];
+    logLikelihood_total6[i_ts1[n]] += logLikelihood_cd6[n];
+    logLikelihood_total7[i_ts1[n]] += logLikelihood_cd7[n];
+    logLikelihood_total8[i_ts1[n]] += logLikelihood_cd8[n];
+    logLikelihood_total9[i_ts1[n]] += logLikelihood_cd9[n];
+  }
+}
