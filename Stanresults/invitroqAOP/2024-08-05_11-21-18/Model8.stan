@@ -164,32 +164,19 @@ transformed parameters {
 
 model {
   // Priors
-  // k_cDD ~ normal(0.2867653965, 0.5);
-  // degDD ~ normal(0.0567184119, 0.5);
-  // hillDD ~ normal(0.0019195344, 0.5);
-  // k_inter ~ normal(1.170355e-01, 0.5);
-  // maxdeath ~ normal(0.6633626532, 0.5);
-  // k_hillnec ~ normal(4.5413255075, 0.5);
-  // p ~ normal(0.8, 0.2);
-  // h ~ normal(20,4);
-  // 
-  // // Priors for degrees of freedom
-  // nu_DD ~ gamma(2, 0.1); // Prior for nu, making it robust
-  // nu_NEC ~ gamma(2, 0.1);
-  
-   // Priors for model parameters
-  k_cDD ~ lognormal(-1.25, 0.5);   // Lognormal to reflect positive, skewed values
-  degDD ~ lognormal(-3.0, 0.5);    // Lognormal for small decay rates, reflecting skew
-  hillDD ~ lognormal(-6.0, 0.5);   // Small positive values, use lognormal
-  k_inter ~ lognormal(-2.5, 0.5);  // Interaction rate, lognormal skewed
-  maxdeath ~ normal(1.0, 0.3);     // Centered on 1.0 with some variability
-  k_hillnec ~ normal(5.0, 0.5);    // Centered on 5.0 to reflect central tendency
-  p ~ beta(2, 2);                  // Beta distribution for bounded parameter (0, 1)
-  h ~ normal(20, 3);               // High centrality with narrower uncertainty
+ 
+  k_cDD ~ lognormal(-1.25, 0.5);   
+  degDD ~ lognormal(-3.0, 0.5);    
+  hillDD ~ lognormal(-6.0, 0.5);   
+  k_inter ~ lognormal(-2.5, 0.5);  
+  maxdeath ~ normal(1.0, 0.3);     
+  k_hillnec ~ normal(5.0, 0.5);    
+  p ~ beta(2, 2);                  
+  h ~ normal(20, 3);               
 
   // Priors for degrees of freedom (Student's t-distribution)
-  nu_DD ~ exponential(1);          // Exponential to encourage smaller degrees of freedom, more robustness
-  nu_NEC ~ exponential(1);         // Same reasoning, encourages t-distribution robustness
+  nu_DD ~ exponential(1);          
+  nu_NEC ~ exponential(1);        
 
   // Likelihood using Student's t-distribution
   for (n in 1 : N_DD) {
