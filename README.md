@@ -1,5 +1,7 @@
 # Platinum-nephrotox – Analysis Workflow
 
+[![DOI](https://zenodo.org/badge/1112669318.svg)](https://doi.org/10.5281/zenodo.17861517)
+
 This repository contains the complete workflow for processing data, performing key event (KE) mapping, calibrating qAOP and PK models in CmdStan, and performing QIVIVE and benchmark dose (BMD) analysis for the study *Quantitative Adverse Outcome Pathway Modeling of Cisplatin-Induced Nephrotoxicity: Developing In Vitro and In Vivo Models for Predictive Extrapolation*.
 
 ---
